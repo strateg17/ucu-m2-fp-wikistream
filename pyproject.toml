@@ -1,0 +1,22 @@
+[project]
+name = "wikistream"
+version = "0.1.0"
+description = "Functional reactive Wikimedia recent changes processing API"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.115.0",
+  "uvicorn>=0.30.0",
+  "reactivex>=4.0.4",
+  "aiohttp>=3.10.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0.0",
+  "pytest-asyncio>=0.23.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
