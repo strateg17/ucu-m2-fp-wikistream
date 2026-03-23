@@ -14,7 +14,7 @@ from aiohttp import web, WSCloseCode
 
 from wiki_stream import fetch_wikipedia_changes, deduplicator
 from event_processor import parse_stream
-from user_statistics import FunctionalStore, TimePeriod, TimeGranularity
+from user_statistics import StatisticsStore, TimePeriod, TimeGranularity
 from query_api import (
     get_statistics_summary,
     get_most_active_users,
@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 connected_websockets = set()
 
 # Global state for the pure functional pipeline
-current_store = FunctionalStore()
+current_store = StatisticsStore()
 
 
 # ============================================================================
