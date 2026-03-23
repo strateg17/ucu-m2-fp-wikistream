@@ -7,21 +7,16 @@ A pure Functional Reactive Programming (FRP) implementation for analyzing real-t
 ### Reactive Flow Diagram
 ```mermaid
 graph TD
-    A[WikiMedia SSE Source] -->|Raw JSON| B(fetch_wikipedia_changes)
-    B -->|0.1s delay| C(deduplicator)
-    C -->|Dict| D(parse_stream)
-    D -->|Maybe Monad| E{ParsedEvent?}
-    E -->|Some| F(accumulate)
-    E -->|Nothing| G[Skip]
+    A[Wikimedia SSE] --> B(fetch_stream)
+    B --> C(deduplicate)
+    C --> D(parse_event)
+    D --> E{Result}
     
-    subgraph "State Management (Pure Functional)"
-    F -->|State[n]| H[StatisticsStore n]
-    H -->|update| I[StatisticsStore n+1]
-    I -->|Next Iteration| F
-    end
+    E -->|Ok| F(scan_state)
+    E -->|Err| G[Filter Out]
     
-    I -->|Snapshot| J[CLI / Dashboard]
-    J -->|Query API| K[Either Monad Results]
+    F --> H[State Stream]
+    H --> I[Projection / Query Layer]
 ```
 
 ### 1. Functional Reactive Programming (FRP)
