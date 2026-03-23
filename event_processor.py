@@ -5,9 +5,11 @@ Processes WikiMedia events using functional programming patterns.
 Uses Maybe monad for safe parsing and functors for transformations.
 """
 
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, AsyncIterator
 from datetime import datetime
 from enum import Enum
+import aiostream
+from aiostream import pipable_operator
 from functional_utils import Maybe, Some, Nothing, compose, pipe
 
 
@@ -363,3 +365,47 @@ def group_by_topic(events: list[ParsedEvent]) -> Dict[str, list[ParsedEvent]]:
         groups[event.title].append(event)
     
     return groups
+
+
+# ============================================================================
+# Stream Operators (Functional Reactive)
+# ============================================================================
+
+@pipable_operator
+async def parse_stream(source: AsyncIterator[Dict[str, Any]]) -> AsyncIterator[ParsedEvent]:
+    """
+    A pipable operator that parses raw events into ParsedEvent objects.
+    Uses Maybe monad and filters out failures.
+    
+    Args:
+        source: Async iterator of raw event dictionaries.
+        
+    Yields:
+        Successfully parsed ParsedEvent objects.
+    """
+    async with aiostream.streamcontext(source) as streamer:
+        async for raw_event in streamer:
+            maybe_parsed = parse_event(raw_event)
+            if maybe_parsed.is_some():
+                yield maybe_parsed.get_or_else(None)
+
+
+@pipable_operator
+async def filter_edit_type_stream(
+    source: AsyncIterator[ParsedEvent],
+    edit_type: EditType
+) -> AsyncIterator[ParsedEvent]:
+    """
+    A pipable operator that filters parsed events by edit type.
+    
+    Args:
+        source: Async iterator of ParsedEvent objects.
+        edit_type: Type to keep.
+        
+    Yields:
+        Matching ParsedEvent objects.
+    """
+    async with aiostream.streamcontext(source) as streamer:
+        async for event in streamer:
+            if event.edit_type == edit_type:
+                yield event

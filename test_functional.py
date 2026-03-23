@@ -394,6 +394,114 @@ class TestEventProcessing:
 
 
 # ============================================================================
+# Functional Store & Stream Operators Tests
+# ============================================================================
+
+from user_statistics import FunctionalStore
+from event_processor import parse_stream
+import asyncio
+import aiostream
+
+class TestFunctionalStoreAndOperators:
+    """Tests for pure functional state management and reactive operators."""
+
+    def create_sample_event(self, user="TestUser"):
+        return {
+            'user': user,
+            'title': 'Test Page',
+            'timestamp': 1711200000,  # Example timestamp
+            'bot': False,
+            'minor': False,
+            'length': {'old': 100, 'new': 200},
+            'wiki': 'enwiki',
+            'namespace': 0,
+            'comment': 'Test comment'
+        }
+
+    def test_functional_store_immutability(self):
+        """Test that FunctionalStore is immutable and returns new instances."""
+        store1 = FunctionalStore()
+        raw_event = self.create_sample_event()
+        maybe_parsed = parse_event(raw_event)
+        event = maybe_parsed.get_or_else(None)
+        
+        store2 = store1.update(event)
+        
+        # Original store should be empty
+        assert len(store1.users) == 0
+        assert len(store1.all_events) == 0
+        
+        # New store should have the data
+        assert len(store2.users) == 1
+        assert len(store2.all_events) == 1
+        assert "TestUser" in store2.users
+        assert store2.get_summary()['total_events'] == 1
+
+    def test_parse_stream_operator(self):
+        """Test the parse_stream pipable operator."""
+        async def run_test():
+            raw_events = [
+                self.create_sample_event(user="User1"),
+                {'invalid': 'event'},
+                self.create_sample_event(user="User2")
+            ]
+            
+            # Create a stream from the list
+            source = aiostream.stream.iterate(raw_events)
+            
+            # Apply the operator
+            pipeline = source | parse_stream.pipe()
+            
+            # Collect results
+            results = []
+            async with pipeline.stream() as streamer:
+                async for event in streamer:
+                    results.append(event)
+                    
+            assert len(results) == 2
+            assert results[0].user == "User1"
+            assert results[1].user == "User2"
+            
+        asyncio.run(run_test())
+
+    def test_functional_accumulation_pipeline(self):
+        """Test the full functional accumulation pipeline."""
+        async def run_test():
+            raw_events = [
+                self.create_sample_event(user="User1"),
+                self.create_sample_event(user="User2"),
+                self.create_sample_event(user="User1")
+            ]
+            
+            source = aiostream.stream.iterate(raw_events)
+            
+            pipeline = (
+                source 
+                | parse_stream.pipe()
+                | aiostream.pipe.accumulate(
+                    lambda store, event: store.update(event), 
+                    initializer=FunctionalStore()
+                )
+            )
+            
+            # Collect final state
+            final_state = None
+            async with pipeline.stream() as streamer:
+                async for state in streamer:
+                    final_state = state
+                    
+            assert final_state is not None
+            summary = final_state.get_summary()
+            assert summary['total_events'] == 3
+            assert summary['total_users'] == 2
+            assert "User1" in final_state.users
+            assert "User2" in final_state.users
+            assert final_state.users["User1"].total_contributions == 2
+            
+        asyncio.run(run_test())
+
+
+# ============================================================================
 # Run Tests
 # ============================================================================
 

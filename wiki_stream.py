@@ -24,14 +24,40 @@ from aiostream import operator, pipable_operator
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+from functional_utils import Maybe, Some, Nothing
+
 T = TypeVar("T")
 TKey = TypeVar("TKey")
+U = TypeVar("U")
 
 # WikiMedia EventStream endpoint
 WIKIMEDIA_STREAM_URL = "https://stream.wikimedia.org/v2/stream/recentchange"
 
 # Default data limiting: process only events from last 60 days
 DATA_CUTOFF_DAYS = 60
+
+
+@pipable_operator
+async def map_maybe(
+    source: AsyncIterator[T],
+    f: Callable[[T], Maybe[U]]
+) -> AsyncIterator[U]:
+    """
+    A pipable operator that applies a Maybe-returning function to each item 
+    in the stream and yields only the successful results (Some values).
+    
+    Args:
+        source: The input async iterator.
+        f: A function that returns a Maybe instance.
+        
+    Yields:
+        Extracted values from Some instances, skipping Nothing.
+    """
+    async with aiostream.streamcontext(source) as streamer:
+        async for item in streamer:
+            maybe_val = f(item)
+            if maybe_val.is_some():
+                yield maybe_val.get_or_else(None)
 
 
 @operator

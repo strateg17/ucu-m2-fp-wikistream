@@ -379,6 +379,49 @@ async def demo_reactive_pipeline(max_events: int = 50):
     print("\nPipeline execution finished.")
 
 
+async def demo_pure_functional_pipeline(max_events: int = 20):
+    """
+    Demonstrates a pure functional pipeline without state modifications.
+    Uses aiostream.pipe.accumulate with FunctionalStore.
+    """
+    from user_statistics import FunctionalStore
+    from event_processor import parse_stream
+    
+    print("\n" + "=" * 80)
+    print("DEMO 6: Pure Functional Reactive Pipeline")
+    print("=" * 80)
+    
+    # Constructing the pure functional pipeline
+    pipeline = (
+        fetch_wikipedia_changes()
+        | aiostream.pipe.delay(0.1)
+        | parse_stream.pipe()
+        | aiostream.pipe.take(max_events)
+        | aiostream.pipe.accumulate(
+            lambda store, event: store.update(event), 
+            initializer=FunctionalStore()
+        )
+    )
+    
+    print(f"Processing {max_events} events using immutable state accumulation...")
+    
+    # The stream now yields FunctionalStore instances (each being a new state)
+    last_store = None
+    async with pipeline.stream() as streamer:
+        async for store in streamer:
+            last_store = store
+            summary = store.get_summary()
+            if summary['total_events'] % 5 == 0:
+                print(f"  - State updated: {summary['total_events']} events, {summary['total_users']} users")
+            
+    if last_store:
+        summary = last_store.get_summary()
+        print("\nFinal Statistics Summary (Pure Functional State):")
+        print(f"  - Total Events: {summary['total_events']}")
+        print(f"  - Total Users: {summary['total_users']}")
+        print(f"  - Total Topics: {summary['total_topics']}")
+
+
 # ============================================================================
 # Entry Point
 # ============================================================================
@@ -397,9 +440,10 @@ async def main():
     print("3. Analytics & Growth Visualizations")
     print("4. Live Continuous Monitor")
     print("5. Reactive Pipeline Architecture Demo")
+    print("6. Pure Functional Pipeline (Immutable State)")
     print()
     
-    mode = input("Select mode (1-5): ").strip()
+    mode = input("Select mode (1-6): ").strip()
     
     try:
         if mode == "1":
@@ -412,6 +456,8 @@ async def main():
         elif mode == "4":
             await process_stream_with_statistics(duration_seconds=60)
             await demo_statistics_queries()
+        elif mode == "6":
+            await demo_pure_functional_pipeline(30)
         else:
             await demo_reactive_pipeline(50)
     

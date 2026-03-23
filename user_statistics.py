@@ -5,7 +5,7 @@ In-memory storage for user contribution statistics.
 Provides time-series data with configurable granularity.
 """
 
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any
 from datetime import datetime, timedelta
 from collections import defaultdict, Counter
 from enum import Enum
@@ -140,7 +140,51 @@ class UserStatistics:
         return self.topic_contributions.most_common(limit)
 
 
+class FunctionalStore:
+    """
+    A pure functional, immutable store for user statistics.
+    Every update returns a new instance of the store.
+    """
+    
+    def __init__(
+        self, 
+        users: Optional[Dict[str, UserStatistics]] = None, 
+        topic_typo_counts: Optional[Counter] = None, 
+        all_events: Optional[List[ParsedEvent]] = None
+    ):
+        self.users = users or {}
+        self.topic_typo_counts = topic_typo_counts or Counter()
+        self.all_events = all_events or []
+    
+    def update(self, event: ParsedEvent) -> 'FunctionalStore':
+        """
+        Pure functional update: returns a new FunctionalStore.
+        """
+        # Update user statistics
+        new_users = self.users.copy()
+        user_stats = new_users.get(event.user, UserStatistics())
+        new_users[event.user] = user_stats.add_contribution(event)
+        
+        # Update typo counts
+        new_topic_typo_counts = self.topic_typo_counts.copy()
+        if event.edit_type == EditType.TYPO_EDITING:
+            new_topic_typo_counts[event.title] += 1
+            
+        # Add to event list (using a copy)
+        new_all_events = self.all_events + [event]
+        
+        return FunctionalStore(new_users, new_topic_typo_counts, new_all_events)
+    
+    def get_summary(self) -> Dict[str, Any]:
+        return {
+            'total_users': len(self.users),
+            'total_events': len(self.all_events),
+            'total_topics': len(self.topic_typo_counts),
+        }
+
+
 class StatisticsStore:
+
     """
     Thread-safe in-memory store for all user statistics.
     
