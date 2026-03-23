@@ -5,15 +5,17 @@ Provides a functional interface for querying user statistics.
 Uses Either monad for error handling.
 """
 
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any, Union
 from functional_utils import Either, Left, Right
 from user_statistics import (
     StatisticsStore, 
+    FunctionalStore,
     get_statistics_store,
     TimeGranularity,
     TimePeriod
 )
 
+StoreType = Union[StatisticsStore, FunctionalStore]
 
 # ============================================================================
 # Query Functions - All return Either monad for error handling
@@ -22,7 +24,7 @@ from user_statistics import (
 def get_user_contribution_series(
     username: str,
     granularity: TimeGranularity = TimeGranularity.DAY,
-    store: StatisticsStore = None
+    store: StoreType = None
 ) -> Either[str, List[Tuple[Any, int]]]:
     """
     Get user contribution time series.
@@ -35,7 +37,7 @@ def get_user_contribution_series(
     Args:
         username: Username to query
         granularity: Time granularity (HOUR, DAY, MONTH, YEAR)
-        store: StatisticsStore instance (uses global if None)
+        store: StatisticsStore or FunctionalStore instance (uses global if None)
         
     Returns:
         Either[str, List[Tuple[datetime, int]]]: 
@@ -45,11 +47,16 @@ def get_user_contribution_series(
         store = get_statistics_store()
     
     # Check if user exists
-    if not store.user_exists(username):
+    if isinstance(store, StatisticsStore):
+        exists = store.user_exists(username)
+        user_stats = store.get_user_statistics(username)
+    else:
+        exists = username in store.users
+        user_stats = store.users.get(username)
+
+    if not exists:
         return Left(f"User '{username}' not found. No contributions observed yet.")
     
-    # Get user statistics
-    user_stats = store.get_user_statistics(username)
     if user_stats is None:
         return Left(f"Failed to retrieve statistics for user '{username}'.")
     
@@ -65,7 +72,7 @@ def get_user_contribution_series(
 def get_user_top_topics(
     username: str,
     limit: int = 10,
-    store: StatisticsStore = None
+    store: StoreType = None
 ) -> Either[str, List[Tuple[str, int]]]:
     """
     Get topics to which user has contributed most.
@@ -77,7 +84,7 @@ def get_user_top_topics(
     Args:
         username: Username to query
         limit: Maximum number of topics to return
-        store: StatisticsStore instance (uses global if None)
+        store: StatisticsStore or FunctionalStore instance (uses global if None)
         
     Returns:
         Either[str, List[Tuple[str, int]]]: 
@@ -87,11 +94,16 @@ def get_user_top_topics(
         store = get_statistics_store()
     
     # Check if user exists
-    if not store.user_exists(username):
+    if isinstance(store, StatisticsStore):
+        exists = store.user_exists(username)
+        user_stats = store.get_user_statistics(username)
+    else:
+        exists = username in store.users
+        user_stats = store.users.get(username)
+
+    if not exists:
         return Left(f"User '{username}' not found. No contributions observed yet.")
     
-    # Get user statistics
-    user_stats = store.get_user_statistics(username)
     if user_stats is None:
         return Left(f"Failed to retrieve statistics for user '{username}'.")
     
@@ -106,7 +118,7 @@ def get_user_top_topics(
 
 def get_user_contribution_types(
     username: str,
-    store: StatisticsStore = None
+    store: StoreType = None
 ) -> Either[str, Dict[str, int]]:
     """
     Get type of contribution (typo editing vs content addition).
@@ -117,7 +129,7 @@ def get_user_contribution_types(
     
     Args:
         username: Username to query
-        store: StatisticsStore instance (uses global if None)
+        store: StatisticsStore or FunctionalStore instance (uses global if None)
         
     Returns:
         Either[str, Dict[str, int]]: 
@@ -133,11 +145,16 @@ def get_user_contribution_types(
         store = get_statistics_store()
     
     # Check if user exists
-    if not store.user_exists(username):
+    if isinstance(store, StatisticsStore):
+        exists = store.user_exists(username)
+        user_stats = store.get_user_statistics(username)
+    else:
+        exists = username in store.users
+        user_stats = store.users.get(username)
+
+    if not exists:
         return Left(f"User '{username}' not found. No contributions observed yet.")
     
-    # Get user statistics
-    user_stats = store.get_user_statistics(username)
     if user_stats is None:
         return Left(f"Failed to retrieve statistics for user '{username}'.")
     
@@ -156,7 +173,7 @@ def get_user_contribution_types(
 def get_most_active_users(
     period: TimePeriod,
     limit: int = 10,
-    store: StatisticsStore = None
+    store: StoreType = None
 ) -> Either[str, List[Tuple[str, int]]]:
     """
     Retrieve most active users during a time period.
@@ -168,7 +185,7 @@ def get_most_active_users(
     Args:
         period: Time period (HOUR, DAY, MONTH, YEAR)
         limit: Maximum number of users to return
-        store: StatisticsStore instance (uses global if None)
+        store: StatisticsStore or FunctionalStore instance (uses global if None)
         
     Returns:
         Either[str, List[Tuple[str, int]]]: 
@@ -177,8 +194,20 @@ def get_most_active_users(
     if store is None:
         store = get_statistics_store()
     
-    # Get most active users
-    users = store.get_most_active_users(period, limit)
+    if isinstance(store, StatisticsStore):
+        # Get most active users
+        users = store.get_most_active_users(period, limit)
+    else:
+        # Re-implement activity check for FunctionalStore if needed
+        from collections import Counter
+        from user_statistics import _get_period_cutoff
+        from datetime import datetime
+        cutoff = _get_period_cutoff(datetime.now(), period)
+        user_counts = Counter()
+        for event in store.all_events:
+            if event.timestamp >= cutoff:
+                user_counts[event.user] += 1
+        users = user_counts.most_common(limit)
     
     if not users:
         return Left(f"No active users found in the last {period.value}.")
@@ -188,7 +217,7 @@ def get_most_active_users(
 
 def get_top_typo_topics(
     limit: int = 10,
-    store: StatisticsStore = None
+    store: StoreType = None
 ) -> Either[str, List[Tuple[str, int]]]:
     """
     Retrieve top topics with most typo edits.
@@ -200,7 +229,7 @@ def get_top_typo_topics(
     
     Args:
         limit: Maximum number of topics to return
-        store: StatisticsStore instance (uses global if None)
+        store: StatisticsStore or FunctionalStore instance (uses global if None)
         
     Returns:
         Either[str, List[Tuple[str, int]]]: 
@@ -209,8 +238,10 @@ def get_top_typo_topics(
     if store is None:
         store = get_statistics_store()
     
-    # Get top typo topics
-    topics = store.get_top_typo_topics(limit)
+    if isinstance(store, StatisticsStore):
+        topics = store.get_top_typo_topics(limit)
+    else:
+        topics = store.topic_typo_counts.most_common(limit)
     
     if not topics:
         return Left("No typo edits found yet.")
@@ -219,7 +250,7 @@ def get_top_typo_topics(
 
 
 def get_all_users(
-    store: StatisticsStore = None
+    store: StoreType = None
 ) -> Either[str, List[str]]:
     """
     Get list of all observed users.
@@ -227,7 +258,7 @@ def get_all_users(
     EITHER MONAD: Returns Right(users) on success, Left(error) on failure.
     
     Args:
-        store: StatisticsStore instance (uses global if None)
+        store: StatisticsStore or FunctionalStore instance (uses global if None)
         
     Returns:
         Either[str, List[str]]: Right([usernames, ...]) or Left(error_message)
@@ -235,7 +266,10 @@ def get_all_users(
     if store is None:
         store = get_statistics_store()
     
-    users = store.get_all_users()
+    if isinstance(store, StatisticsStore):
+        users = store.get_all_users()
+    else:
+        users = list(store.users.keys())
     
     if not users:
         return Left("No users observed yet.")
@@ -244,7 +278,7 @@ def get_all_users(
 
 
 def get_statistics_summary(
-    store: StatisticsStore = None
+    store: StoreType = None
 ) -> Either[str, Dict[str, Any]]:
     """
     Get overall statistics summary.
@@ -252,7 +286,7 @@ def get_statistics_summary(
     EITHER MONAD: Returns Right(summary) on success, Left(error) on failure.
     
     Args:
-        store: StatisticsStore instance (uses global if None)
+        store: StatisticsStore or FunctionalStore instance (uses global if None)
         
     Returns:
         Either[str, Dict[str, Any]]: Right(summary_dict) or Left(error_message)
@@ -260,7 +294,10 @@ def get_statistics_summary(
     if store is None:
         store = get_statistics_store()
     
-    summary = store.get_statistics_summary()
+    if isinstance(store, StatisticsStore):
+        summary = store.get_statistics_summary()
+    else:
+        summary = store.get_summary()
     
     return Right(summary)
 

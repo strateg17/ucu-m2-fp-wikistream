@@ -12,9 +12,9 @@ from pathlib import Path
 from datetime import datetime
 from aiohttp import web, WSCloseCode
 
-from wiki_stream import create_basic_pipeline
-from event_processor import parse_event, ParsedEvent
-from user_statistics import get_statistics_store, TimePeriod, TimeGranularity
+from wiki_stream import fetch_wikipedia_changes, deduplicator
+from event_processor import parse_stream
+from user_statistics import FunctionalStore, TimePeriod, TimeGranularity
 from query_api import (
     get_statistics_summary,
     get_most_active_users,
@@ -23,6 +23,7 @@ from query_api import (
     get_user_top_topics,
     get_user_contribution_series
 )
+import aiostream
 
 # Logging configuration
 logging.basicConfig(level=logging.INFO)
@@ -30,6 +31,9 @@ logger = logging.getLogger(__name__)
 
 # Global set of connected WebSockets
 connected_websockets = set()
+
+# Global state for the pure functional pipeline
+current_store = FunctionalStore()
 
 
 # ============================================================================
@@ -39,37 +43,41 @@ connected_websockets = set()
 async def wikipedia_stream_task(app):
     """
     Background task that runs the Wikipedia stream pipeline.
-    Updates the global statistics store and broadcasts events to all connected
+    Updates the global FunctionalStore and broadcasts events to all connected
     clients via WebSockets.
     """
-    logger.info("Starting Wikipedia stream background task...")
-    store = get_statistics_store()
+    global current_store
+    logger.info("Starting Wikipedia stream pure functional background task...")
     
-    # Create the functional pipeline (Requirement #1: Recent Changes stream)
-    pipeline = create_basic_pipeline()
+    # Create the pure functional pipeline
+    pipeline = (
+        fetch_wikipedia_changes()
+        | aiostream.pipe.delay(0.1)
+        | deduplicator.pipe(key_extractor=lambda event: event.get('id', 0))
+        | parse_stream.pipe()
+        | aiostream.pipe.accumulate(
+            lambda state, event: (state[0].update(event), event),
+            initializer=(current_store, None)
+        )
+    )
     
     try:
         async with pipeline.stream() as streamer:
-            async for raw_event in streamer:
-                # Use Maybe monad for safe parsing
-                maybe_parsed = parse_event(raw_event)
+            async for store, last_event in streamer:
+                # Update global state (pure functional accumulation)
+                current_store = store
                 
-                if maybe_parsed.is_some():
-                    parsed = maybe_parsed.get_or_else(None)
-                    
-                    # Update statistics using IO monad
-                    store.update_user_statistics(parsed).run()
-                    
+                if last_event:
                     # Prepare message for broadcasting
                     message = {
                         'type': 'live_event',
                         'data': {
-                            'user': parsed.user,
-                            'title': parsed.title,
-                            'edit_type': parsed.edit_type.value,
-                            'diff': parsed.diff_size,
-                            'wiki': parsed.wiki,
-                            'timestamp': parsed.timestamp.isoformat()
+                            'user': last_event.user,
+                            'title': last_event.title,
+                            'edit_type': last_event.edit_type.value,
+                            'diff': last_event.diff_size,
+                            'wiki': last_event.wiki,
+                            'timestamp': last_event.timestamp.isoformat()
                         }
                     }
                     
@@ -123,7 +131,7 @@ async def websocket_handler(request):
 
 async def api_summary(request):
     """Returns global statistics summary (Either monad)."""
-    result = get_statistics_summary()
+    result = get_statistics_summary(store=current_store)
     if result.is_right():
         return web.json_response(result.get_right())
     return web.json_response({'error': result.get_left()}, status=500)
@@ -137,7 +145,7 @@ async def api_active_users(request):
     except KeyError:
         period = TimePeriod.HOUR
         
-    result = get_most_active_users(period, limit=10)
+    result = get_most_active_users(period, limit=10, store=current_store)
     if result.is_right():
         return web.json_response(result.get_right())
     return web.json_response({'error': result.get_left()}, status=404)
@@ -145,7 +153,7 @@ async def api_active_users(request):
 
 async def api_typo_topics(request):
     """Returns top typo topics (Requirement #3.5)."""
-    result = get_top_typo_topics(limit=10)
+    result = get_top_typo_topics(limit=10, store=current_store)
     if result.is_right():
         return web.json_response(result.get_right())
     return web.json_response({'error': result.get_left()}, status=404)
@@ -167,9 +175,9 @@ async def api_user_stats(request):
         gran = TimeGranularity.HOUR
         
     # Combine results (Requirement #3.1, #3.2, #3.3)
-    types_res = get_user_contribution_types(username)
-    topics_res = get_user_top_topics(username, limit=5)
-    series_res = get_user_contribution_series(username, gran)
+    types_res = get_user_contribution_types(username, store=current_store)
+    topics_res = get_user_top_topics(username, limit=5, store=current_store)
+    series_res = get_user_contribution_series(username, gran, store=current_store)
     
     if types_res.is_left():
         return web.json_response({'error': types_res.get_left()}, status=404)
