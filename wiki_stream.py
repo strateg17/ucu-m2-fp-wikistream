@@ -1,13 +1,14 @@
 """
 Wikipedia/Wikimedia Streaming Integration
 
-Connects to WikiMedia EventStream API to receive real-time Wikipedia changes.
-Uses aiostream operators for functional reactive programming (following professor's example).
+This module provides the core streaming functionality for the Wikipedia Real-Time 
+Stream Analyzer. It utilizes the `aiostream` library to implement functional 
+reactive programming patterns, specifically focusing on composable operators.
 
 WikiMedia EventStream documentation:
 https://wikitech.wikimedia.org/wiki/Event_Platform/EventStreams
 
-NOTE: WikiMedia EventStream API does NOT require an API key - it's freely accessible!
+NOTE: WikiMedia EventStream API does NOT require an API key and is freely accessible.
 """
 
 import asyncio
@@ -26,29 +27,27 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 TKey = TypeVar("TKey")
 
-# WikiMedia EventStream endpoints
+# WikiMedia EventStream endpoint
 WIKIMEDIA_STREAM_URL = "https://stream.wikimedia.org/v2/stream/recentchange"
 
-# Data limiting: process only events from last 2 months (prevents overwhelming data volume)
-DATA_CUTOFF_DAYS = 60  # Last 2 months of data
+# Default data limiting: process only events from last 60 days
+DATA_CUTOFF_DAYS = 60
 
 
 @operator
 async def fetch_wikipedia_changes() -> AsyncIterator[Dict[str, Any]]:
     """
-    Fetch Wikipedia recent changes using aiostream operator pattern.
+    An aiostream source operator that fetches real-time Wikipedia recent changes.
     
-    Following professor's example from lesson14.py - using @operator decorator
-    to create a functional reactive stream operator.
-    
-    OPERATOR PATTERN: Creates a stream source using aiostream decorators
-    NO API KEY REQUIRED: WikiMedia EventStream is freely accessible
+    This operator implements a reactive stream source using Server-Sent Events (SSE).
+    It maintains a connection to the Wikimedia EventStream and yields raw JSON 
+    events as they arrive.
     
     Yields:
-        Dict[str, Any]: Raw event data from WikiMedia
+        Dict[str, Any]: A dictionary containing raw event data.
     """
     headers = {
-        "Accept": "text/event-stream",  # Correct for SSE
+        "Accept": "text/event-stream",
         "User-Agent": "WikiStreamAnalyzer/1.0 (Educational project; dizervf@gmail.com) Python/aiohttp",
     }
     
@@ -59,25 +58,24 @@ async def fetch_wikipedia_changes() -> AsyncIterator[Dict[str, Any]]:
             async with session.get(WIKIMEDIA_STREAM_URL) as response:
                 logger.info(f"Connected to WikiMedia stream (status: {response.status})")
                 
-                # Read SSE stream line by line
                 async for line in response.content:
                     line = line.decode('utf-8').strip()
                     
-                    # SSE format: lines starting with "data: " contain JSON
+                    # SSE data lines start with the "data: " prefix
                     if line.startswith('data: '):
-                        json_data = line[6:]  # Remove "data: " prefix
+                        json_data = line[6:]
                         
                         try:
                             event = json.loads(json_data)
                             yield event
                         except json.JSONDecodeError:
-                            logger.warning(f"Failed to parse JSON")
+                            logger.warning("Failed to parse event JSON")
                             continue
     
     except aiohttp.ClientError as e:
-        logger.error(f"Connection error: {e}")
+        logger.error(f"HTTP connection error: {e}")
     except Exception as e:
-        logger.error(f"Unexpected error: {e}")
+        logger.error(f"Unexpected error in stream source: {e}")
 
 
 @pipable_operator
@@ -86,33 +84,26 @@ async def filter_by_date(
     cutoff_days: int = DATA_CUTOFF_DAYS
 ) -> AsyncIterator[Dict[str, Any]]:
     """
-    Filter events to only include recent data (last N days).
-    
-    Following professor's pattern - using @pipable_operator for transformations.
-    This prevents getting banned by limiting data volume (like professor did with GitHub).
-    
-    PIPABLE OPERATOR: Can be piped with | operator
+    A pipable operator that filters events based on their timestamp.
     
     Args:
-        source: Source stream
-        cutoff_days: Only process events from last N days
+        source: The input async iterator (stream source).
+        cutoff_days: Only include events occurring within this many days from now.
         
     Yields:
-        Recent events only
+        Filtered event dictionaries.
     """
     cutoff_time = datetime.now() - timedelta(days=cutoff_days)
     cutoff_timestamp = int(cutoff_time.timestamp())
     
     async with aiostream.streamcontext(source) as streamer:
         async for event in streamer:
-            # Check timestamp (WikiMedia uses Unix timestamp)
             event_timestamp = event.get('timestamp', 0)
             
             if event_timestamp >= cutoff_timestamp:
                 yield event
             else:
-                # Log when we skip old events (shouldn't happen with live stream)
-                logger.debug(f"Skipping old event: {event_timestamp}")
+                logger.debug(f"Filtering out old event: {event_timestamp}")
 
 
 @pipable_operator
@@ -121,19 +112,17 @@ async def deduplicator(
     key_extractor: Callable[[Dict[str, Any]], TKey],
 ) -> AsyncIterator[Dict[str, Any]]:
     """
-    Remove duplicate events based on a key.
+    A pipable operator that removes duplicate events from the stream.
     
-    Following professor's deduplicator pattern from lesson14.py.
-    Prevents processing the same event twice.
-    
-    PIPABLE OPERATOR: Stateful transformation operator
+    This operator maintains a local state of seen keys to ensure each unique 
+    event is only processed once.
     
     Args:
-        source: Source stream
-        key_extractor: Function to extract unique key from event
+        source: The input async iterator.
+        key_extractor: A function that returns a unique identifier for an event.
         
     Yields:
-        Deduplicated events
+        Unique event dictionaries.
     """
     async with aiostream.streamcontext(source) as streamer:
         seen_keys: set[TKey] = set()
@@ -142,7 +131,7 @@ async def deduplicator(
             key = key_extractor(event)
             
             if key in seen_keys:
-                logger.debug(f"Duplicate event skipped: {key}")
+                logger.debug(f"Skipping duplicate event: {key}")
                 continue
             
             seen_keys.add(key)
@@ -155,16 +144,14 @@ async def filter_by_user(
     username: str
 ) -> AsyncIterator[Dict[str, Any]]:
     """
-    Filter events for a specific user.
-    
-    PIPABLE OPERATOR: Filter transformation
+    A pipable operator that filters the stream for a specific Wikipedia user.
     
     Args:
-        source: Source stream
-        username: Username to filter for
+        source: The input async iterator.
+        username: The Wikipedia username to track.
         
     Yields:
-        Events from the specified user
+        Events initiated by the specified user.
     """
     async with aiostream.streamcontext(source) as streamer:
         async for event in streamer:
@@ -178,16 +165,14 @@ async def filter_by_users(
     usernames: set[str]
 ) -> AsyncIterator[Dict[str, Any]]:
     """
-    Filter events for multiple users.
-    
-    PIPABLE OPERATOR: Filter transformation
+    A pipable operator that filters the stream for a set of Wikipedia users.
     
     Args:
-        source: Source stream
-        usernames: Set of usernames to filter for
+        source: The input async iterator.
+        usernames: A set of Wikipedia usernames to track.
         
     Yields:
-        Events from any of the specified users
+        Events initiated by any of the specified users.
     """
     async with aiostream.streamcontext(source) as streamer:
         async for event in streamer:
@@ -196,24 +181,27 @@ async def filter_by_users(
 
 
 # ============================================================================
-# Pipeline Builder Functions - Following Professor's Pattern
+# Pipeline Builder Functions
 # ============================================================================
 
 def create_basic_pipeline(limit: int = None):
     """
-    Create a basic Wikipedia stream pipeline.
+    Constructs a basic Wikipedia event stream pipeline with deduplication.
     
-    Following professor's pattern: pipe operators together with |
+    The pipeline includes:
+    1. Fetching raw changes from Wikimedia.
+    2. Applying a small delay (0.1s) to respect API throughput.
+    3. Deduplicating events based on their unique 'id'.
     
     Args:
-        limit: Optional limit on number of events (for testing)
+        limit: An optional number of events to take before stopping.
         
     Returns:
-        Pipeline that can be streamed
+        An aiostream pipeline object.
     """
     pipeline = (
         fetch_wikipedia_changes()
-        | aiostream.pipe.delay(0.1)  # Rate limiting - prevent overwhelming
+        | aiostream.pipe.delay(0.1)
         | deduplicator.pipe(
             key_extractor=lambda event: event.get('id', 0),
         )
@@ -227,14 +215,14 @@ def create_basic_pipeline(limit: int = None):
 
 def create_user_tracking_pipeline(username: str, limit: int = None):
     """
-    Create a pipeline to track specific user.
+    Constructs a pipeline tailored for tracking a specific Wikipedia user.
     
     Args:
-        username: Username to track
-        limit: Optional limit on number of events
+        username: The user to monitor.
+        limit: An optional limit on the number of events to process.
         
     Returns:
-        Pipeline filtered for specific user
+        An aiostream pipeline object filtered by user.
     """
     pipeline = (
         fetch_wikipedia_changes()
@@ -253,14 +241,14 @@ def create_user_tracking_pipeline(username: str, limit: int = None):
 
 def create_multi_user_pipeline(usernames: list[str], limit: int = None):
     """
-    Create a pipeline to track multiple users.
+    Constructs a pipeline tailored for tracking a set of Wikipedia users.
     
     Args:
-        usernames: List of usernames to track
-        limit: Optional limit on number of events
+        usernames: A list of users to monitor.
+        limit: An optional limit on the number of events to process.
         
     Returns:
-        Pipeline filtered for multiple users
+        An aiostream pipeline object filtered by multiple users.
     """
     username_set = set(usernames)
     
@@ -280,14 +268,15 @@ def create_multi_user_pipeline(usernames: list[str], limit: int = None):
 
 
 # ============================================================================
-# Backward Compatibility - Keep old async generator interface
+# Legacy Async Generator Interfaces
 # ============================================================================
 
 async def stream_recent_changes():
     """
-    Backward compatible async generator interface.
+    Provides an asynchronous generator interface for the basic pipeline.
     
-    Yields raw events using the new aiostream pipeline.
+    Yields:
+        Raw event dictionaries.
     """
     pipeline = create_basic_pipeline()
     
@@ -298,13 +287,13 @@ async def stream_recent_changes():
 
 async def stream_user_changes(username: str):
     """
-    Track changes from a specific user (backward compatible).
+    Provides an asynchronous generator interface for tracking a single user.
     
     Args:
-        username: Wikipedia username to track
+        username: The user to monitor.
         
     Yields:
-        Events from the specified user
+        Event dictionaries associated with the user.
     """
     pipeline = create_user_tracking_pipeline(username)
     
@@ -315,13 +304,13 @@ async def stream_user_changes(username: str):
 
 async def stream_multiple_users(usernames: list[str]):
     """
-    Track changes from multiple users (backward compatible).
+    Provides an asynchronous generator interface for tracking multiple users.
     
     Args:
-        usernames: List of Wikipedia usernames to track
+        usernames: The users to monitor.
         
     Yields:
-        Events from any of the specified users
+        Event dictionaries associated with any of the specified users.
     """
     pipeline = create_multi_user_pipeline(usernames)
     
@@ -331,19 +320,19 @@ async def stream_multiple_users(usernames: list[str]):
 
 
 # ============================================================================
-# Helper Functions
+# Stream Utility Functions
 # ============================================================================
 
 async def take_stream(stream, n: int):
     """
-    Take first n items from a stream (backward compatible).
+    Consumes and yields only the first n items from an asynchronous stream.
     
     Args:
-        stream: Source async generator
-        n: Number of items to take
+        stream: The source async generator or stream.
+        n: The number of items to take.
         
     Yields:
-        First n items from stream
+        Items from the stream until the limit is reached.
     """
     count = 0
     async for item in stream:

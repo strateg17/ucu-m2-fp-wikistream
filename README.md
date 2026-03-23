@@ -30,6 +30,26 @@ pip install -r requirements.txt
 
 ---
 
+## Dashboard (Web Interface)
+
+The project includes a real-time web dashboard built with `aiohttp` and `Chart.js`.
+
+### Running the Dashboard
+
+```bash
+python dashboard.py
+```
+
+Then open your browser at **http://localhost:8080**.
+
+**Dashboard Features:**
+- **Live Event Feed**: Real-time visualization of Wikipedia edits as they happen.
+- **Top Contributors**: Bar chart of the most active users in the last hour.
+- **Typo Hotspots**: List of topics with the most frequent typo corrections.
+- **User Explorer**: Search for any user to see their cumulative contribution growth chart and activity summary.
+
+---
+
 ## Quick Start
 
 ```bash

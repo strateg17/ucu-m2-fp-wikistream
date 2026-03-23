@@ -1,15 +1,24 @@
 """
 Wikipedia Real-Time Stream Analyzer - Main Demo
 
-Demonstrates the functional reactive programming approach for Wikipedia stream analysis.
-NOW USING AIOSTREAM following professor's example from lesson14.py
+This application demonstrates a functional reactive programming (FRP) approach 
+to analyzing real-time Wikipedia change streams. It uses the `aiostream` library 
+to build composable data pipelines and custom monads for safe data processing.
 
-This implements all requirements from the task:
-1. Get all Recent Changes as a real-time stream
-2. Track in real-time the activity of particular users
-3. Retrieve statistics for users
+Key features implemented:
+1. Real-time Wikipedia Recent Changes streaming.
+2. Targeted tracking of specific users or sets of users.
+3. Automated user profile creation upon first observation.
+4. Comprehensive user statistics, including:
+   - Cumulative contribution time series (X=time, Y=total).
+   - Top topics of contribution.
+   - Classification of contribution types (typos vs. content).
+5. Global statistics:
+   - Most active users over specified periods (Year/Month/Day).
+   - Top topics with the highest frequency of typo corrections.
+6. Data visualization using Matplotlib.
 
-NO API KEY REQUIRED: WikiMedia EventStream is freely accessible!
+NO API KEY REQUIRED: The WikiMedia EventStream is publicly accessible.
 """
 
 import asyncio
@@ -23,7 +32,7 @@ import aiostream
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
-# Import our functional programming modules
+# Import functional programming modules
 from wiki_stream import (
     create_basic_pipeline,
     create_user_tracking_pipeline,
@@ -50,13 +59,16 @@ shutdown_requested = False
 
 
 def signal_handler(sig, frame):
-    """Handle Ctrl+C gracefully"""
+    """
+    Handles SIGINT (Ctrl+C) to trigger a graceful shutdown of the 
+    streaming pipelines.
+    """
     global shutdown_requested
     print("\n\nShutdown requested. Finishing current processing...")
     shutdown_requested = True
 
 
-# Register signal handler
+# Register the signal handler
 signal.signal(signal.SIGINT, signal_handler)
 
 
@@ -66,10 +78,17 @@ signal.signal(signal.SIGINT, signal_handler)
 
 def create_contribution_visualizations(active_users_result, store):
     """
-    Create line chart visualizations of user contributions over time.
+    Generates visual analytics for user contributions.
     
-    Shows cumulative contributions for top users.
-    Saves charts to 'visualizations/' directory.
+    Creates a two-part visualization:
+    1. A line chart showing cumulative contributions over time for top users.
+    2. A bar chart showing total contribution counts.
+    
+    Charts are saved to the 'visualizations/' directory.
+    
+    Args:
+        active_users_result: An Either monad containing the list of active users.
+        store: The StatisticsStore instance containing the data.
     """
     
     if not active_users_result.is_right():
@@ -81,46 +100,44 @@ def create_contribution_visualizations(active_users_result, store):
         print("\n⚠️  No users found")
         return
     
-    # Create output directory
+    # Ensure the output directory exists
     output_dir = Path("visualizations")
     output_dir.mkdir(exist_ok=True)
     
-    # Take top 5 users for visualization
+    # Focus on the top 5 users for clarity in the charts
     top_users = users[:5]
     
-    print(f"\n📈 Creating line chart for top {len(top_users)} users...")
+    print(f"\n📈 Creating analytics for top {len(top_users)} users...")
     
-    # Create figure with subplots
+    # Setup the matplotlib figure
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
     fig.suptitle('Wikipedia User Contribution Analysis', fontsize=16, fontweight='bold')
     
-    # Plot 1: Individual user contribution series (line chart)
+    # Define a color palette
     colors = plt.cm.Set3(range(len(top_users)))
     
+    # Plot 1: Cumulative contribution series (Line Chart)
     for idx, (username, total_count) in enumerate(top_users):
-        # Get user statistics directly to access raw timestamps
         user_stats = store.get_user_statistics(username)
         
         if user_stats and user_stats.contribution_points:
-            # Use raw contribution points (timestamp, cumulative_count)
-            # This shows the actual progression over time
+            # Extract raw points for time-series plotting
             timestamps, counts = zip(*user_stats.contribution_points)
             
-            # Plot the line
             ax1.plot(timestamps, counts, marker='o', label=username, 
                     color=colors[idx], linewidth=2, markersize=4, alpha=0.8)
     
     ax1.set_xlabel('Time', fontsize=12)
     ax1.set_ylabel('Cumulative Contributions', fontsize=12)
-    ax1.set_title('User Contributions Over Time (Cumulative)', fontsize=14, fontweight='bold')
+    ax1.set_title('User Contribution Growth', fontsize=14, fontweight='bold')
     ax1.legend(loc='upper left', fontsize=10)
     ax1.grid(True, alpha=0.3)
     
-    # Format time axis based on data range
+    # Format the time axis
     ax1.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
     plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45, ha='right')
     
-    # Plot 2: Total contributions bar chart
+    # Plot 2: Absolute contribution counts (Bar Chart)
     usernames = [u[0] for u in top_users]
     counts = [u[1] for u in top_users]
     
@@ -133,7 +150,7 @@ def create_contribution_visualizations(active_users_result, store):
     ax2.set_xticklabels(usernames, rotation=45, ha='right')
     ax2.grid(True, axis='y', alpha=0.3)
     
-    # Add value labels on bars
+    # Annotate bars with values
     for bar in bars:
         height = bar.get_height()
         ax2.text(bar.get_x() + bar.get_width()/2., height,
@@ -142,24 +159,23 @@ def create_contribution_visualizations(active_users_result, store):
     
     plt.tight_layout()
     
-    # Save figure
+    # Export the visualization
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_file = output_dir / f"user_contributions_{timestamp}.png"
     plt.savefig(output_file, dpi=300, bbox_inches='tight')
     
     print(f"✅ Visualization saved to: {output_file}")
     
-    # Try to display (will work in some environments)
     try:
         plt.show(block=False)
         print("📊 Chart displayed (close window to continue)")
-    except:
-        print("📊 Chart saved (display not available in this environment)")
+    except Exception:
+        print("📊 Chart saved (graphical display not available)")
         plt.close()
 
 
 # ============================================================================
-# Main Processing Loop - Functional Reactive Programming
+# Core Processing Logic
 # ============================================================================
 
 async def process_stream_with_statistics(
@@ -167,107 +183,92 @@ async def process_stream_with_statistics(
     tracked_users: Set[str] = None
 ):
     """
-    Main processing loop demonstrating functional reactive programming.
+    The main processing loop implementing the functional reactive paradigm.
     
-    This follows the pattern from your professor's example:
-    - Async stream as reactive data source
-    - Functor operations (map) for transformations
-    - Monad operations (flat_map) for error handling
-    - IO monad for side effects
+    Flow:
+    1. Ingest raw events from the reactive stream.
+    2. Transform raw events into ParsedEvent objects using the Maybe monad.
+    3. If valid, trigger an IO monad to update the in-memory statistics store.
     
     Args:
-        duration_seconds: How long to run (None = indefinitely)
-        tracked_users: Set of users to track specifically
+        duration_seconds: Maximum time to run.
+        tracked_users: Specific users to highlight in console output.
     """
     store = get_statistics_store()
     event_count = 0
     start_time = datetime.now()
     
+    print("\n" + "=" * 80)
+    print("Live Stream Processing Active")
     print("=" * 80)
-    print("Wikipedia Real-Time Stream Analyzer")
-    print("Functional Reactive Programming Demo")
-    print("=" * 80)
-    print("\nConnecting to WikiMedia EventStream API...")
-    print("Press Ctrl+C to stop and see statistics.\n")
+    print("Press Ctrl+C to stop and view final analytics.\n")
     
     try:
-        # Stream recent changes (requirement #1)
         async for raw_event in stream_recent_changes():
-            
             if shutdown_requested:
                 break
             
-            # Check duration limit
             if duration_seconds:
                 elapsed = (datetime.now() - start_time).total_seconds()
                 if elapsed > duration_seconds:
                     break
             
-            # FUNCTOR: Map raw event to parsed event using Maybe monad
+            # Use Maybe monad for safe parsing
             maybe_parsed: Maybe[ParsedEvent] = parse_event(raw_event)
             
-            # MONAD: Chain operations with Maybe
             if maybe_parsed.is_some():
                 parsed_event = maybe_parsed.get_or_else(None)
                 
-                # IO MONAD: Execute side effect of updating statistics
+                # Encapsulate state update in IO monad
                 io_update = store.update_user_statistics(parsed_event)
                 io_update.run()
                 
                 event_count += 1
                 
-                # Print progress every 10 events
                 if event_count % 10 == 0:
                     print(f"Processed {event_count} events...")
                 
-                # Track specific users (requirement #2)
+                # Check for tracked users
                 if tracked_users and parsed_event.user in tracked_users:
-                    print(f"\n[TRACKED USER] {parsed_event.user} edited '{parsed_event.title}'")
-                    print(f"  Type: {parsed_event.edit_type.value}, Diff: {parsed_event.diff_size} chars")
+                    print(f"\n[ALERT] Tracked user {parsed_event.user} edited '{parsed_event.title}'")
+                    print(f"  Action: {parsed_event.edit_type.value}, Δ: {parsed_event.diff_size} chars")
     
     except Exception as e:
-        print(f"\nError during streaming: {e}")
+        print(f"\nStreaming error encountered: {e}")
     
     finally:
-        print(f"\n{'=' * 80}")
-        print(f"Stream processing complete. Processed {event_count} events.")
-        print(f"{'=' * 80}\n")
+        print(f"\nProcessing stopped. Total events ingested: {event_count}")
 
 
 async def demo_basic_streaming(max_events: int = 50):
     """
-    Simple demo: stream and parse events.
-    
-    Demonstrates requirement #1: Get all Recent Changes as real-time stream.
+    Demonstrates basic real-time streaming of Wikipedia changes.
+    (Satisfies Requirement #1)
     """
     print("\n" + "=" * 80)
-    print("DEMO 1: Basic Streaming (Requirement #1)")
+    print("DEMO 1: Real-Time Stream Ingestion")
     print("=" * 80)
-    print(f"Streaming first {max_events} events...\n")
     
     count = 0
     async for event in take_stream(stream_recent_changes(), max_events):
-        # Parse with Maybe monad
         maybe_parsed = parse_event(event)
         
         if maybe_parsed.is_some():
             parsed = maybe_parsed.get_or_else(None)
             count += 1
-            print(f"{count}. [{parsed.user}] edited '{parsed.title}' "
+            print(f"{count:02d}. [{parsed.user}] -> '{parsed.title}' "
                   f"({parsed.edit_type.value}, {parsed.diff_size:+d} chars)")
 
 
 async def demo_user_tracking(username: str, max_events: int = 100):
     """
-    Track a specific user's contributions.
-    
-    Demonstrates requirement #2: Track activity of particular user.
+    Demonstrates targeted tracking of a specific user.
+    (Satisfies Requirement #2)
     """
     print("\n" + "=" * 80)
-    print(f"DEMO 2: User Tracking (Requirement #2)")
+    print(f"DEMO 2: Target User Tracking")
     print("=" * 80)
-    print(f"Tracking user: {username}")
-    print(f"Will monitor up to {max_events} events...\n")
+    print(f"Monitoring: {username}\n")
     
     store = get_statistics_store()
     found_count = 0
@@ -280,34 +281,26 @@ async def demo_user_tracking(username: str, max_events: int = 100):
         if maybe_parsed.is_some():
             parsed = maybe_parsed.get_or_else(None)
             
-            # Update statistics
-            io_update = store.update_user_statistics(parsed)
-            io_update.run()
+            # Maintain stats for comparison
+            store.update_user_statistics(parsed).run()
             
-            # Check if this is our tracked user
             if parsed.user == username:
                 found_count += 1
-                print(f"\n[{found_count}] {parsed.user} edited '{parsed.title}'")
-                print(f"    Type: {parsed.edit_type.value}")
-                print(f"    Diff: {parsed.diff_size:+d} chars")
-                print(f"    Time: {parsed.timestamp}")
+                print(f"MATCH [{found_count}]: {parsed.user} edited '{parsed.title}'")
     
-    print(f"\n\nFound {found_count} edits by {username} in {total_checked} events.")
+    print(f"\nScan complete. Found {found_count} events for {username} out of {total_checked} checked.")
 
 
 async def demo_statistics_queries():
     """
-    Demonstrate statistical queries using Either monad.
-    
-    Demonstrates requirement #3: Retrieve user statistics.
-    NOW WITH VISUALIZATIONS!
+    Demonstrates statistical retrieval and visualization using functional patterns.
+    (Satisfies Requirement #3)
     """
     print("\n" + "=" * 80)
-    print("DEMO 3: Statistical Queries (Requirement #3)")
+    print("DEMO 3: Statistical Analysis & Visualization")
     print("=" * 80)
     
-    # First collect some data
-    print("\nCollecting data from stream (100 events)...\n")
+    print("\nCollecting sample data (100 events)...")
     store = get_statistics_store()
     
     event_count = 0
@@ -315,223 +308,122 @@ async def demo_statistics_queries():
         maybe_parsed = parse_event(event)
         if maybe_parsed.is_some():
             parsed = maybe_parsed.get_or_else(None)
-            io_update = store.update_user_statistics(parsed)
-            io_update.run()
+            store.update_user_statistics(parsed).run()
             event_count += 1
-            
-            if event_count % 20 == 0:
-                print(f"  Processed {event_count} events...")
+            if event_count % 25 == 0:
+                print(f"  Collected {event_count}...")
     
-    print(f"\nData collection complete! Processed {event_count} events.\n")
+    print("\n--- Summary Analytics ---")
+    print_either_result(get_statistics_summary(store), "Global Stats")
     
-    # Query 1: Overall summary
-    print("\n--- Overall Summary ---")
-    summary_result = get_statistics_summary(store)
-    print_either_result(summary_result, "Summary")
-    
-    # Query 2: Most active users (requirement #3.4)
-    print("\n--- Most Active Users (Last Hour) ---")
+    # Requirement 3.4
+    print("\n--- Active Users (Last Hour) ---")
     active_users_result = get_most_active_users(TimePeriod.HOUR, limit=5, store=store)
     if active_users_result.is_right():
-        users = active_users_result.get_right()
-        for i, (username, count) in enumerate(users, 1):
-            print(f"{i}. {username}: {count} contributions")
-    else:
-        print(f"Error: {active_users_result.get_left()}")
+        for i, (name, count) in enumerate(active_users_result.get_right(), 1):
+            print(f"{i}. {name}: {count} edits")
     
-    # Query 3: Top typo topics (requirement #3.5)
-    print("\n--- Top Topics with Typo Edits ---")
+    # Requirement 3.5
+    print("\n--- Typo Correction Hotspots ---")
     typo_topics_result = get_top_typo_topics(limit=5, store=store)
     if typo_topics_result.is_right():
-        topics = typo_topics_result.get_right()
-        for i, (topic, count) in enumerate(topics, 1):
-            print(f"{i}. {topic}: {count} typo edits")
-    else:
-        print(f"Error: {typo_topics_result.get_left()}")
+        for i, (topic, count) in enumerate(typo_topics_result.get_right(), 1):
+            print(f"{i}. {topic}: {count} corrections")
     
-    # Query 4: User-specific statistics (if we have users)
-    if active_users_result.is_right():
-        users = active_users_result.get_right()
-        if users:
-            username = users[0][0]  # Most active user
+    # Requirement 3.1 - 3.3 for the top user
+    if active_users_result.is_right() and active_users_result.get_right():
+        top_user = active_users_result.get_right()[0][0]
+        print(f"\n--- Deep Dive: User '{top_user}' ---")
+        
+        # Contribution types
+        types_res = get_user_contribution_types(top_user, store)
+        if types_res.is_right():
+            t = types_res.get_right()
+            print(f"  Typo Fixes: {t['typo_edits']} | Content: {t['content_additions']}")
             
-            print(f"\n--- Statistics for User: {username} ---")
-            
-            # Contribution types (requirement #3.3)
-            types_result = get_user_contribution_types(username, store)
-            if types_result.is_right():
-                types = types_result.get_right()
-                print(f"\nContribution Types:")
-                print(f"  Typo edits: {types['typo_edits']}")
-                print(f"  Content additions: {types['content_additions']}")
-                print(f"  Minor edits: {types['minor_edits']}")
-                print(f"  Total: {types['total']}")
-            
-            # Top topics (requirement #3.2)
-            topics_result = get_user_top_topics(username, limit=3, store=store)
-            if topics_result.is_right():
-                topics = topics_result.get_right()
-                print(f"\nTop Topics:")
-                for i, (topic, count) in enumerate(topics, 1):
-                    print(f"  {i}. {topic}: {count} edits")
-            
-            # Contribution series (requirement #3.1)
-            series_result = get_user_contribution_series(
-                username, 
-                TimeGranularity.HOUR, 
-                store
-            )
-            if series_result.is_right():
-                series = series_result.get_right()
-                print(f"\nContribution Series (by hour): {len(series)} data points")
-                # Show first few points
-                for timestamp, count in series[:3]:
-                    print(f"  {timestamp}: {count} total contributions")
+        # Top topics
+        topics_res = get_user_top_topics(top_user, limit=3, store=store)
+        if topics_res.is_right():
+            print(f"  Primary Topics: {', '.join([item[0] for item in topics_res.get_right()])}")
     
-    # NEW: Create visualizations
-    print("\n" + "=" * 80)
-    print("📊 CREATING VISUALIZATIONS")
-    print("=" * 80)
-    
+    # Requirement: Visualization
     create_contribution_visualizations(active_users_result, store)
 
 
-# ============================================================================
-# New Demo Using AIOSTREAM Pipeline Pattern (Professor's Style)
-# ============================================================================
-
-async def demo_aiostream_pipeline(max_events: int = 50):
+async def demo_reactive_pipeline(max_events: int = 50):
     """
-    Demo using aiostream pipeline pattern like professor's lesson14.py.
+    Demonstrates the construction and execution of a reactive pipeline.
     
-    This demonstrates the functional reactive programming approach with:
-    - @operator and @pipable_operator decorators
-    - Pipeline composition with | operator
-    - Functional transformations
+    Showcases:
+    - Composable operators.
+    - Declarative data flow.
+    - Deduplication and rate limiting.
     """
     print("\n" + "=" * 80)
-    print("DEMO: AIOSTREAM PIPELINE (Professor's Pattern from lesson14.py)")
+    print("DEMO 4: Reactive Pipeline Composition")
     print("=" * 80)
-    print(f"Processing {max_events} events using functional pipelines...\n")
     
     store = get_statistics_store()
-    count = 0
-    
-    # Create pipeline following professor's pattern
     pipeline = create_basic_pipeline(limit=max_events)
     
-    print("Pipeline created with:")
-    print("  1. fetch_wikipedia_changes() - stream source")
-    print("  2. delay(0.1) - rate limiting")
-    print("  3. deduplicator - remove duplicates")
-    print("  4. take(50) - limit events\n")
-    
-    # Execute pipeline
+    count = 0
     async with pipeline.stream() as streamer:
         async for raw_event in streamer:
-            # Parse with Maybe monad
             maybe_parsed = parse_event(raw_event)
-            
             if maybe_parsed.is_some():
                 parsed = maybe_parsed.get_or_else(None)
-                
-                # Update statistics with IO monad
-                io_update = store.update_user_statistics(parsed)
-                io_update.run()
-                
+                store.update_user_statistics(parsed).run()
                 count += 1
-                print(f"{count}. [{parsed.user}] edited '{parsed.title}' "
-                      f"({parsed.edit_type.value}, {parsed.diff_size:+d} chars)")
-    
-    print(f"\n\nProcessed {count} events using aiostream pipeline!")
-    print("This demonstrates functional reactive programming with:")
-    print("  ✓ @operator decorator for stream sources")
-    print("  ✓ @pipable_operator for transformations")
-    print("  ✓ Pipeline composition with | operator")
-    print("  ✓ Functional programming patterns")
+                print(f"Pipeline -> Event {count:02d}: {parsed.user}")
+
+    print("\nPipeline execution finished.")
 
 
 # ============================================================================
-# Main Entry Point
+# Entry Point
 # ============================================================================
 
 async def main():
-    """Main entry point with menu"""
+    """Application CLI interface."""
     
-    print("\n" + "=" * 80)
-    print("Wikipedia Real-Time Stream Analyzer")
-    print("Functional Programming Course Project")
-    print("Implementation using AIOSTREAM (Professor's Pattern from lesson14.py)")
-    print("=" * 80)
+    print("\n" + "█" * 80)
+    print("  WIKIPEDIA REAL-TIME STREAM ANALYZER")
+    print("  Functional Reactive Programming Project")
+    print("█" * 80)
     
-    print("\n📢 NOTE: WikiMedia EventStream API does NOT require an API key!")
-    print("         It's freely accessible - just start streaming! 🎉\n")
-    
-    print("\nSelect demo mode:")
-    print("1. Basic streaming (50 events)")
-    print("2. User tracking (monitor specific user)")
-    print("3. Statistical queries (collect 100 events and query with visualizations)")
-    print("4. Full demo (continuous streaming with live stats)")
-    print("5. AIOSTREAM Pipeline Demo (Professor's pattern - default)")
+    print("\nMenu:")
+    print("1. Basic Stream Ingestion (50 events)")
+    print("2. Targeted User Tracking")
+    print("3. Analytics & Growth Visualizations")
+    print("4. Live Continuous Monitor")
+    print("5. Reactive Pipeline Architecture Demo")
     print()
     
-    mode = input("Enter mode (1-5) or press Enter for mode 5: ").strip()
-    
-    if not mode:
-        mode = "5"
+    mode = input("Select mode (1-5): ").strip()
     
     try:
         if mode == "1":
-            await demo_basic_streaming(max_events=50)
-        
+            await demo_basic_streaming(50)
         elif mode == "2":
-            username = input("Enter username to track: ").strip()
-            if not username:
-                username = "ClueBot NG"  # A bot that's usually active
-            await demo_user_tracking(username, max_events=100)
-        
+            user = input("Username to track (e.g., 'ClueBot NG'): ").strip()
+            await demo_user_tracking(user or "ClueBot NG", 100)
         elif mode == "3":
             await demo_statistics_queries()
-        
         elif mode == "4":
-            duration = input("Duration in seconds (press Enter for 60): ").strip()
-            duration = int(duration) if duration else 60
-            
-            users_input = input("Users to track (comma-separated, or Enter for none): ").strip()
-            tracked_users = set(u.strip() for u in users_input.split(",")) if users_input else None
-            
-            await process_stream_with_statistics(
-                duration_seconds=duration,
-                tracked_users=tracked_users
-            )
-            
-            # Show statistics after streaming
-            print("\n\nFinal Statistics:")
+            await process_stream_with_statistics(duration_seconds=60)
             await demo_statistics_queries()
-        
-        elif mode == "5":
-            await demo_aiostream_pipeline(max_events=50)
-            
-            # Show some statistics
-            print("\n\nShowing statistics...")
-            await demo_statistics_queries()
-        
         else:
-            print("Invalid mode. Running default demo (mode 5)...")
-            await demo_aiostream_pipeline(max_events=50)
+            await demo_reactive_pipeline(50)
     
     except KeyboardInterrupt:
-        print("\n\nInterrupted by user.")
+        print("\nProcess interrupted.")
     except Exception as e:
-        print(f"\n\nError: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"\nExecution error: {e}")
     
     print("\n" + "=" * 80)
-    print("Demo complete!")
+    print("Session Ended")
     print("=" * 80 + "\n")
 
 
 if __name__ == '__main__':
-    # Run the async main function
     asyncio.run(main())
