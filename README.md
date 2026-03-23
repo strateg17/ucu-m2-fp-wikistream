@@ -4,6 +4,26 @@ A pure Functional Reactive Programming (FRP) implementation for analyzing real-t
 
 ## 🏗 Core Architecture
 
+### Reactive Flow Diagram
+```mermaid
+graph TD
+    A[WikiMedia SSE Source] -->|Raw JSON| B(fetch_wikipedia_changes)
+    B -->|0.1s delay| C(deduplicator)
+    C -->|Dict| D(parse_stream)
+    D -->|Maybe Monad| E{ParsedEvent?}
+    E -->|Some| F(accumulate)
+    E -->|Nothing| G[Skip]
+    
+    subgraph "State Management (Pure Functional)"
+    F -->|State[n]| H[StatisticsStore n]
+    H -->|update| I[StatisticsStore n+1]
+    I -->|Next Iteration| F
+    end
+    
+    I -->|Snapshot| J[CLI / Dashboard]
+    J -->|Query API| K[Either Monad Results]
+```
+
 ### 1. Functional Reactive Programming (FRP)
 The core logic is built using `aiostream` pipelines. Streams are transformed through pipable operators, maintaining a clear separation between data ingestion, transformation, and state accumulation.
 
