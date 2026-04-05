@@ -145,7 +145,7 @@ async def api_active_users(request):
     except KeyError:
         period = TimePeriod.HOUR
         
-    result = get_most_active_users(period, limit=10, store=current_store)
+    result = get_most_active_users(current_store, period, limit=10)
     if result.is_right():
         return web.json_response(result.get_right())
     return web.json_response({'error': result.get_left()}, status=404)
@@ -177,7 +177,7 @@ async def api_user_stats(request):
     # Combine results (Requirement #3.1, #3.2, #3.3)
     types_res = get_user_contribution_types(username, store=current_store)
     topics_res = get_user_top_topics(username, limit=5, store=current_store)
-    series_res = get_user_contribution_series(username, gran, store=current_store)
+    series_res = get_user_contribution_series(username, current_store, gran)
     
     if types_res.is_left():
         return web.json_response({'error': types_res.get_left()}, status=404)
