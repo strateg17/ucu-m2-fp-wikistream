@@ -116,6 +116,16 @@ h1 { margin: 0; font-size: 1.5rem; }
     height: 200px;
 }
 
+.chart-container--wide {
+    height: 320px;
+}
+
+.chart-subtitle {
+    margin: -10px 0 12px;
+    font-size: 0.85rem;
+    color: #888;
+}
+
 .list-container p { margin: 5px 0; font-size: 0.9rem; border-bottom: 1px solid #f0f0f0; padding: 5px 0; }
 .list-container .count { float: right; font-weight: bold; background: #eee; padding: 0 5px; border-radius: 3px; }
 

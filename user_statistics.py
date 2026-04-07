@@ -102,12 +102,14 @@ class StatisticsStore:
         self, 
         users: Dict[str, UserStatistics] = None, 
         topic_typo_counts: Counter = None, 
-        all_events: List[ParsedEvent] = None
+        all_events: List[ParsedEvent] = None,
+        word_mistake_counts: Counter = None
     ):
         self.users = users or {}
         self.topic_typo_counts = topic_typo_counts or Counter()
         self.all_events = all_events or []
-    
+        self.word_mistake_counts = word_mistake_counts or Counter()
+
     def update(self, event: ParsedEvent) -> 'StatisticsStore':
         """Returns a new StatisticsStore instance."""
         new_users = self.users.copy()
@@ -120,8 +122,22 @@ class StatisticsStore:
             
         new_events = self.all_events + [event]
         
-        return StatisticsStore(new_users, new_typos, new_events)
-    
+        return StatisticsStore(new_users, new_typos, new_events, self.word_mistake_counts)
+
+    def add_word_corrections(
+        self, corrections: List[Tuple[str, str]]
+    ) -> 'StatisticsStore':
+        """
+        Fold detected (old_word, new_word) pairs into word_mistake_counts.
+        Returns a new StatisticsStore — pure, no mutation.
+        """
+        new_counts = self.word_mistake_counts.copy()
+        for old_word, new_word in corrections:
+            new_counts[f"{old_word} → {new_word}"] += 1
+        return StatisticsStore(
+            self.users, self.topic_typo_counts, self.all_events, new_counts
+        )
+
     def get_summary(self) -> Dict[str, Any]:
         return {
             'total_users': len(self.users),

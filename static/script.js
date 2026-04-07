@@ -4,6 +4,7 @@
 let socket;
 let topUsersChart;
 let userGrowthChart;
+let mistakenWordsChart;
 let eventCount = 0;
 
 // ============================================================================
@@ -18,10 +19,12 @@ document.addEventListener('DOMContentLoaded', () => {
     // Initial data fetch
     updateSummary();
     updateTopStats();
-    
+    updateMistakenWords();
+
     // Periodic updates for charts and summary
     setInterval(updateSummary, 5000);
     setInterval(updateTopStats, 10000);
+    setInterval(updateMistakenWords, 15000);
 });
 
 function initCharts() {
@@ -43,6 +46,39 @@ function initCharts() {
             responsive: true,
             maintainAspectRatio: false,
             scales: { y: { beginAtZero: true } }
+        }
+    });
+
+    // Mistaken Words Horizontal Bar Chart
+    const ctxMistaken = document.getElementById('mistakenWordsChart').getContext('2d');
+    mistakenWordsChart = new Chart(ctxMistaken, {
+        type: 'bar',
+        data: {
+            labels: [],
+            datasets: [{
+                label: 'Correction Count',
+                data: [],
+                backgroundColor: 'rgba(231, 76, 60, 0.6)',
+                borderColor: 'rgba(231, 76, 60, 1)',
+                borderWidth: 1
+            }]
+        },
+        options: {
+            indexAxis: 'y',
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    callbacks: {
+                        label: ctx => ` ${ctx.raw} correction${ctx.raw !== 1 ? 's' : ''}`
+                    }
+                }
+            },
+            scales: {
+                x: { beginAtZero: true, title: { display: true, text: 'Times corrected' } },
+                y: { ticks: { font: { family: 'monospace' } } }
+            }
         }
     });
 
@@ -197,6 +233,25 @@ async function updateTopStats() {
         });
     } catch (err) {
         console.error('Error fetching top stats:', err);
+    }
+}
+
+async function updateMistakenWords() {
+    try {
+        const res = await fetch('/api/mistaken-words?limit=15');
+        if (!res.ok) return;
+        const data = await res.json();
+
+        if (!Array.isArray(data) || data.length === 0) return;
+
+        const placeholder = document.getElementById('mistaken-words-placeholder');
+        if (placeholder) placeholder.style.display = 'none';
+
+        mistakenWordsChart.data.labels = data.map(w => w[0]);
+        mistakenWordsChart.data.datasets[0].data = data.map(w => w[1]);
+        mistakenWordsChart.update();
+    } catch (err) {
+        console.error('Error fetching mistaken words:', err);
     }
 }
 

@@ -127,6 +127,20 @@ def get_statistics_summary(
     return Right(store.get_summary())
 
 
+def get_most_mistaken_words(
+    store: StatisticsStore,
+    limit: int = 15,
+) -> Either[str, List[Tuple[str, int]]]:
+    """
+    Retrieve the most frequently corrected word pairs from the store.
+    Returns Either[error_msg, list_of_(correction_pair_str, count)].
+    """
+    words = store.word_mistake_counts.most_common(limit)
+    if not words:
+        return Left("No word corrections detected yet.")
+    return Right(words)
+
+
 # ============================================================================
 # Convenience Functions
 # ============================================================================

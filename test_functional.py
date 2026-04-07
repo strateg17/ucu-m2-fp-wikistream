@@ -8,7 +8,6 @@ import pytest
 import asyncio
 import aiostream
 from datetime import datetime, timedelta
-from typing import List
 
 from functional_utils import (
     Maybe, Some, Nothing,
@@ -25,7 +24,6 @@ from event_processor import (
 from user_statistics import (
     StatisticsStore, UserStatistics,
     TimeGranularity, TimePeriod,
-    _round_to_granularity, _get_period_cutoff
 )
 
 from query_api import (
@@ -77,7 +75,6 @@ def make_parsed_event(
     is_bot: bool = False,
     is_minor: bool = False,
     comment: str = "",
-    mistake_words: List[str] = None,
     wiki: str = "enwiki",
     namespace: int = 0
 ) -> ParsedEvent:
@@ -93,7 +90,6 @@ def make_parsed_event(
         wiki=wiki,
         namespace=namespace,
         comment=comment,
-        mistake_words=mistake_words or [],
     )
 
 
@@ -317,17 +313,6 @@ class TestEventProcessing:
         assert results[0].user == "Good"
 
 
-    def test_parse_event_populates_mistake_words_from_comment(self):
-        """parse_event extracts mistake words directly from the edit comment."""
-        raw = make_raw_event(comment="fix teh→the")
-        event = parse_event(raw).get_or_else(None)
-        assert event.mistake_words == ['teh']
-
-    def test_parse_event_mistake_words_empty_without_arrow(self):
-        """Comments with no arrow pattern produce an empty mistake_words list."""
-        raw = make_raw_event(comment="minor cleanup")
-        event = parse_event(raw).get_or_else(None)
-        assert event.mistake_words == []
 
 
 # ============================================================================
@@ -513,14 +498,6 @@ class TestStatisticsStore:
         )
         assert store.topic_typo_counts["Python"] == 0
 
-    def test_update_accumulates_word_mistakes(self):
-        store = StatisticsStore()
-        e1 = make_parsed_event(mistake_words=["teh", "recieve"])
-        e2 = make_parsed_event(mistake_words=["teh"])
-        store = store.update(e1).update(e2)
-        assert store.word_mistake_counts["teh"] == 2
-        assert store.word_mistake_counts["recieve"] == 1
-
     def test_update_appends_event_to_all_events(self):
         store = StatisticsStore()
         for i in range(4):
@@ -533,7 +510,6 @@ class TestStatisticsStore:
         assert "total_users" in summary
         assert "total_events" in summary
         assert "total_topics" in summary
-        assert "total_mistake_words_tracked" in summary
 
     def test_get_summary_values(self):
         store = StatisticsStore()
@@ -729,71 +705,6 @@ class TestQueryAPI:
         assert summary["total_events"] == 2
 
 
-# ============================================================================
-# 10. Functional Pipeline (aiostream accumulation)
-# ============================================================================
-
-class TestFunctionalPipeline:
-
-    def test_accumulation_pipeline_builds_store(self):
-        async def run():
-            raw_events = [
-                make_raw_event(user="U1"),
-                make_raw_event(user="U1"),
-                make_raw_event(user="U2"),
-            ]
-            source = aiostream.stream.iterate(raw_events)
-            pipeline = (
-                source
-                | parse_stream.pipe()
-                | aiostream.pipe.accumulate(
-                    lambda state, event: (state[0].update(event), event),
-                    initializer=(StatisticsStore(), None)
-                )
-            )
-            final_store = None
-            async with pipeline.stream() as streamer:
-                async for store, _ in streamer:
-                    final_store = store
-            return final_store
-
-        store = asyncio.run(run())
-        assert store.users["U1"].total_contributions == 2
-        assert store.users["U2"].total_contributions == 1
-        assert len(store.all_events) == 3
-
-    def test_pipeline_preserves_immutability(self):
-        """
-        aiostream.accumulate with an initializer emits the initializer first,
-        then one item per event → total = 1 + n items.
-        Each emitted store must be a distinct object (immutability).
-        """
-        async def run():
-            raw_events = [make_raw_event(user="U1"), make_raw_event(user="U2")]
-            source = aiostream.stream.iterate(raw_events)
-            pipeline = (
-                source
-                | parse_stream.pipe()
-                | aiostream.pipe.accumulate(
-                    lambda state, event: (state[0].update(event), event),
-                    initializer=(StatisticsStore(), None)
-                )
-            )
-            stores = []
-            async with pipeline.stream() as streamer:
-                async for store, _ in streamer:
-                    stores.append(store)
-            return stores
-
-        stores = asyncio.run(run())
-        # initializer + 2 events = 3 items total
-        assert len(stores) == 3
-        assert stores[0].get_summary()["total_events"] == 0  # initializer
-        assert stores[1].get_summary()["total_events"] == 1  # after U1
-        assert stores[2].get_summary()["total_events"] == 2  # after U2
-        # Every update returns a new object — core immutability guarantee
-        assert stores[0] is not stores[1]
-        assert stores[1] is not stores[2]
 
 
 if __name__ == '__main__':

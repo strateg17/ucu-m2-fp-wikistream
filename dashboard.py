@@ -6,14 +6,16 @@ Reuses existing project modules: wiki_stream, event_processor, user_statistics, 
 """
 
 import asyncio
+import sys
 import json
 import logging
+from collections import Counter
 from pathlib import Path
 from datetime import datetime
 from aiohttp import web, WSCloseCode
 
 from wiki_stream import fetch_wikipedia_changes, deduplicator
-from event_processor import parse_stream
+from event_processor import parse_stream, EditType
 from user_statistics import StatisticsStore, TimePeriod, TimeGranularity
 from query_api import (
     get_statistics_summary,
@@ -23,6 +25,7 @@ from query_api import (
     get_user_top_topics,
     get_user_contribution_series
 )
+from word_mistake_analyzer import analyze_event_corrections
 import aiostream
 
 # Logging configuration
@@ -35,16 +38,52 @@ connected_websockets = set()
 # Global state for the pure functional pipeline
 current_store = StatisticsStore()
 
+# Separate Counter for word corrections.
+# Lives OUTSIDE the aiostream accumulate state — the accumulate lambda is
+# synchronous and builds its own internal store chain independently of
+# current_store.  Any write to current_store from a background task would be
+# overwritten on the next event.  Keeping corrections here means they are
+# never touched by the accumulate and accumulate safely in parallel.
+_word_mistake_counts: Counter = Counter()
+
 
 # ============================================================================
 # Background Processing Task
 # ============================================================================
+
+async def process_word_corrections(event) -> None:
+    """
+    Background coroutine: fetch Wikipedia revision diff and accumulate
+    detected corrections into _word_mistake_counts.
+
+    WHY a separate Counter and not current_store:
+      aiostream.pipe.accumulate carries its own internal store chain.
+      On every new SSE event it computes store_n = store_{n-1}.update(event)
+      using *its own* store_{n-1}, not the global current_store.  So any
+      write to current_store from here would be overwritten on the very next
+      event.  _word_mistake_counts is never read or written by accumulate,
+      so background tasks can safely append to it without any race condition.
+    """
+    global _word_mistake_counts
+    result = await analyze_event_corrections(event.old_rev, event.new_rev)
+    if result.is_right():
+        new_counts = _word_mistake_counts.copy()
+        for old_word, new_word in result.get_right():
+            new_counts[f"{old_word} → {new_word}"] += 1
+        _word_mistake_counts = new_counts
+
 
 async def wikipedia_stream_task(app):
     """
     Background task that runs the Wikipedia stream pipeline.
     Updates the global FunctionalStore and broadcasts events to all connected
     clients via WebSockets.
+    Pipeline shape:
+      Stream → deduplicate → parse → accumulate)
+                                             ↓
+                                       process_word_corrections   ← writes _word_mistake_counts
+                                             ↓
+                                   broadcast to WebSocket clients
     """
     global current_store
     logger.info("Starting Wikipedia stream pure functional background task...")
@@ -68,7 +107,13 @@ async def wikipedia_stream_task(app):
                 current_store = store
                 
                 if last_event:
-                    # Prepare message for broadcasting
+                    # Spawn correction analysis as a background task so the
+                    # pipeline is never blocked by the Wikipedia HTTP call.
+                    # Corrections land in _word_mistake_counts, NOT in
+                    # current_store, so accumulate cannot overwrite them.
+                    if last_event.edit_type == EditType.TYPO_EDITING:
+                        asyncio.create_task(process_word_corrections(last_event))
+
                     message = {
                         'type': 'live_event',
                         'data': {
@@ -159,6 +204,15 @@ async def api_typo_topics(request):
     return web.json_response({'error': result.get_left()}, status=404)
 
 
+async def api_mistaken_words(request):
+    """Returns the most frequently corrected word pairs from _word_mistake_counts."""
+    limit = int(request.query.get('limit', 15))
+    words = _word_mistake_counts.most_common(limit)
+    if not words:
+        return web.json_response({'error': 'No word corrections detected yet.'}, status=404)
+    return web.json_response(words)
+
+
 async def api_user_stats(request):
     """
     Returns comprehensive stats for a specific user (Requirements #3.1 - 3.3).
@@ -225,6 +279,7 @@ def create_app():
     app.router.add_get('/api/summary', api_summary)
     app.router.add_get('/api/active-users', api_active_users)
     app.router.add_get('/api/typo-topics', api_typo_topics)
+    app.router.add_get('/api/mistaken-words', api_mistaken_words)
     app.router.add_get('/api/user/{username}', api_user_stats)
     
     # WebSocket Route
@@ -242,6 +297,10 @@ def create_app():
 
 
 if __name__ == '__main__':
+    # Fix WinError 10054: Windows ProactorEventLoop raises on abrupt WebSocket close
+    if sys.platform == 'win32':
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
     # Ensure static directory exists
     Path('static').mkdir(exist_ok=True)
     

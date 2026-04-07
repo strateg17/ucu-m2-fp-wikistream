@@ -35,7 +35,9 @@ class ParsedEvent:
         is_minor: bool,
         wiki: str,
         namespace: int,
-        comment: Optional[str] = None
+        comment: Optional[str] = None,
+        old_rev: Optional[int] = None,
+        new_rev: Optional[int] = None,
     ):
         self.user = user
         self.title = title
@@ -47,7 +49,9 @@ class ParsedEvent:
         self.wiki = wiki
         self.namespace = namespace
         self.comment = comment or ""
-    
+        self.old_rev = old_rev
+        self.new_rev = new_rev
+
     def __repr__(self):
         return (f"ParsedEvent(user={self.user}, title={self.title}, "
                 f"edit_type={self.edit_type.value}, diff_size={self.diff_size})")
@@ -75,14 +79,19 @@ def parse_event(raw_event: Dict[str, Any]) -> Maybe[ParsedEvent]:
         wiki = raw_event.get('wiki', 'unknown')
         namespace = raw_event.get('namespace', 0)
         comment = raw_event.get('comment', '')
-        
+
+        revision = raw_event.get('revision', {})
+        old_rev = revision.get('old') if isinstance(revision, dict) else None
+        new_rev = revision.get('new') if isinstance(revision, dict) else None
+
         edit_type = classify_edit_type(diff_size, is_bot, is_minor, comment)
         
         return Some(ParsedEvent(
             user=user, title=title, timestamp=timestamp,
             edit_type=edit_type, diff_size=diff_size,
             is_bot=is_bot, is_minor=is_minor, wiki=wiki,
-            namespace=namespace, comment=comment
+            namespace=namespace, comment=comment,
+            old_rev=old_rev, new_rev=new_rev,
         ))
     except Exception:
         return Nothing()
