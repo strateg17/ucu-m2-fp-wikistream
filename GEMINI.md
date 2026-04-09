@@ -12,7 +12,7 @@ This is a Functional Reactive Programming (FRP) implementation for analyzing Wik
 - **Operators**: All streaming logic MUST use `@operator` and `@pipable_operator` decorators from `aiostream`.
 - **Custom Operators**:
   - `map_maybe`: Use for applying functions that return a `Maybe` monad and filtering out `Nothing`.
-  - `parse_stream`: Use for transforming raw dictionaries into `ParsedEvent` objects in a declarative pipeline.
+  - `parse_stream`: Use for transforming raw dictionaries into `ParsedEvent` objects in a declarative pipeline. Each `ParsedEvent` includes `old_rev`/`new_rev` revision IDs required for diff fetching.
   - `filter_edit_type_stream`: Use for domain-specific filtering of edit types.
 - **Composition**: Chain operators using the pipe `|` operator for declarative pipelines.
 - **Rate Limiting**: Always include `aiostream.pipe.delay(0.1)` (100ms) in streaming pipelines to prevent overwhelming the system and respect the Wikimedia SSE endpoint.
@@ -24,9 +24,16 @@ Located in `functional_utils.py`, these monads MUST be used for consistency:
 - **IO Monad**: Use to encapsulate side-effects (e.g., printing to console, writing files, updating in-memory state). Side-effects should only be executed by calling `.run()`.
 
 ### 3. Immutability & State Management
-- **Pure Functional State**: Prefer using `FunctionalStore` for state accumulation within `aiostream.pipe.accumulate`.
-- **Functional Updates**: Every state update MUST return a new state instance rather than mutating the existing one.
+- **Pure Functional State**: Use `StatisticsStore` for state accumulation within `aiostream.pipe.accumulate`.
+- **Functional Updates**: Every state update MUST return a new state instance rather than mutating the existing one. Use `store.update(event)` for event ingestion and `store.add_word_corrections(pairs)` for word correction data — both return new `StatisticsStore` instances.
 - **Thread Safety**: Use `asyncio.Lock` when updating shared state within the `IO` monad execution. For pure functional pipelines, state is managed by the stream itself.
+
+### 4. Word Correction Analysis (`word_mistake_analyzer.py`)
+- All diff parsing and word alignment logic lives in `word_mistake_analyzer.py` — the only async I/O function is `fetch_revision_diff`; everything else is pure.
+- Use `extract_corrections(diff_html)` to get `List[Tuple[str, str]]` correction pairs from an HTML diff.
+- Use `analyze_event_corrections(old_rev, new_rev)` as the full async pipeline (returns `Either`).
+- Persist results via `store.add_word_corrections(pairs)` — **do not** embed word data in `ParsedEvent`.
+- Query via `get_most_mistaken_words(store)` from `query_api.py`.
 
 ## 🧪 Engineering Standards
 
@@ -47,7 +54,7 @@ Located in `functional_utils.py`, these monads MUST be used for consistency:
 
 3. **Validation**:
    - Run `pytest test_functional.py -v` to ensure no regressions in Monad behavior or event processing.
-   - Run `python main.py` and select **Mode 6** to verify the pure functional `aiostream` pipeline integrity.
+   - Run `python main.py` to verify the pure functional `aiostream` pipeline integrity.
 
 ## 🚨 Safety & Security
 - **Data Privacy**: Although the Wikipedia EventStream is public, avoid logging or storing personal identifying information (PII) beyond what is necessary for statistics.
