@@ -1,401 +1,711 @@
 """
-Unit Tests for Functional Programming Primitives and Core Logic
+Unit Tests for Functional Programming Primitives (Pure Functional)
 
-Tests the Maybe, Either, IO monads and event processing logic.
+Tests the Maybe, Either, IO monads and functional stream operators.
 """
 
 import pytest
-from datetime import datetime
-from typing import Dict, Any
+import asyncio
+import aiostream
+from datetime import datetime, timedelta
 
-# Import functional primitives
 from functional_utils import (
     Maybe, Some, Nothing,
     Either, Left, Right,
     IO, io_pure,
-    Applicative,
     compose, pipe, curry2
 )
 
-# Import event processing
 from event_processor import (
     parse_event, ParsedEvent, EditType,
-    classify_edit_type, extract_user_info,
-    parse_and_extract_user, parse_events_batch
+    classify_edit_type, parse_stream
+)
+
+from user_statistics import (
+    StatisticsStore, UserStatistics,
+    TimeGranularity, TimePeriod,
+)
+
+from query_api import (
+    get_user_contribution_series,
+    get_user_top_topics,
+    get_user_contribution_types,
+    get_most_active_users,
+    get_top_typo_topics,
+    get_statistics_summary
 )
 
 
 # ============================================================================
-# Tests for Maybe Monad
+# Test Helpers
+# ============================================================================
+
+def make_raw_event(
+    user="TestUser",
+    title="Test Page",
+    timestamp=1711200000,
+    bot=False,
+    minor=False,
+    old_length=100,
+    new_length=200,
+    comment="",
+    wiki="enwiki",
+    namespace=0,
+) -> dict:
+    """Build a minimal raw WikiMedia event dict."""
+    return {
+        'user': user,
+        'title': title,
+        'timestamp': timestamp,
+        'bot': bot,
+        'minor': minor,
+        'length': {'old': old_length, 'new': new_length},
+        'comment': comment,
+        'wiki': wiki,
+        'namespace': namespace,
+    }
+
+
+def make_parsed_event(
+    user="TestUser",
+    title="Test Page",
+    timestamp: datetime = None,
+    edit_type: EditType = EditType.CONTENT_ADDITION,
+    diff_size: int = 100,
+    is_bot: bool = False,
+    is_minor: bool = False,
+    comment: str = "",
+    wiki: str = "enwiki",
+    namespace: int = 0
+) -> ParsedEvent:
+    """Directly construct a ParsedEvent for unit testing."""
+    return ParsedEvent(
+        user=user,
+        title=title,
+        timestamp=timestamp or datetime(2024, 3, 23, 12, 0, 0),
+        edit_type=edit_type,
+        diff_size=diff_size,
+        is_bot=is_bot,
+        is_minor=is_minor,
+        wiki=wiki,
+        namespace=namespace,
+        comment=comment,
+    )
+
+
+# ============================================================================
+# 1. Maybe Monad
 # ============================================================================
 
 class TestMaybeMonad:
-    """Test Maybe monad implementation"""
-    
-    def test_some_creation(self):
-        """Test creating Some with a value"""
-        maybe = Some(42)
-        assert maybe.is_some()
-        assert maybe.get_or_else(0) == 42
-    
-    def test_nothing_creation(self):
-        """Test creating Nothing"""
-        maybe = Nothing()
-        assert not maybe.is_some()
-        assert maybe.get_or_else(0) == 0
-    
-    def test_functor_map_some(self):
-        """Test FUNCTOR: mapping over Some"""
-        maybe = Some(5)
-        result = maybe.map(lambda x: x * 2)
-        assert result.is_some()
-        assert result.get_or_else(0) == 10
-    
-    def test_functor_map_nothing(self):
-        """Test FUNCTOR: mapping over Nothing returns Nothing"""
-        maybe = Nothing()
-        result = maybe.map(lambda x: x * 2)
+
+    def test_some_holds_value(self):
+        m = Some(42)
+        assert m.is_some()
+        assert m.get_or_else(0) == 42
+
+    def test_nothing_returns_default(self):
+        m = Nothing()
+        assert not m.is_some()
+        assert m.get_or_else(99) == 99
+
+    def test_some_map_transforms_value(self):
+        assert Some(5).map(lambda x: x * 2).get_or_else(0) == 10
+
+    def test_nothing_map_stays_nothing(self):
+        assert not Nothing().map(lambda x: x * 2).is_some()
+
+    def test_some_flat_map_chains(self):
+        result = Some(5).flat_map(lambda x: Some(x + 1))
+        assert result.get_or_else(0) == 6
+
+    def test_some_flat_map_to_nothing(self):
+        result = Some(5).flat_map(lambda x: Nothing())
         assert not result.is_some()
-    
-    def test_monad_flat_map_some(self):
-        """Test MONAD: flat_map with Some"""
-        maybe = Some(5)
-        result = maybe.flat_map(lambda x: Some(x * 2))
-        assert result.is_some()
-        assert result.get_or_else(0) == 10
-    
-    def test_monad_flat_map_nothing(self):
-        """Test MONAD: flat_map with Nothing returns Nothing"""
-        maybe = Nothing()
-        result = maybe.flat_map(lambda x: Some(x * 2))
+
+    def test_nothing_flat_map_stays_nothing(self):
+        result = Nothing().flat_map(lambda x: Some(x))
         assert not result.is_some()
-    
-    def test_monad_chaining(self):
-        """Test MONAD: chaining multiple operations"""
-        result = (Some(10)
-                  .map(lambda x: x + 5)
-                  .flat_map(lambda x: Some(x * 2))
-                  .map(lambda x: x - 10))
-        assert result.is_some()
-        assert result.get_or_else(0) == 20  # (10 + 5) * 2 - 10 = 20
+
+    def test_chaining_multiple_maps(self):
+        result = Some(2).map(lambda x: x + 1).map(lambda x: x * 3)
+        assert result.get_or_else(0) == 9
 
 
 # ============================================================================
-# Tests for Either Monad
+# 2. Either Monad
 # ============================================================================
 
 class TestEitherMonad:
-    """Test Either monad implementation"""
-    
-    def test_right_creation(self):
-        """Test creating Right"""
-        either = Right(42)
-        assert either.is_right()
-        assert not either.is_left()
-        assert either.get_or_else(0) == 42
-    
-    def test_left_creation(self):
-        """Test creating Left"""
-        either = Left("error")
-        assert either.is_left()
-        assert not either.is_right()
-        assert either.get_or_else(0) == 0
-    
-    def test_functor_map_right(self):
-        """Test FUNCTOR: mapping over Right"""
-        either = Right(5)
-        result = either.map(lambda x: x * 2)
-        assert result.is_right()
-        assert result.get_or_else(0) == 10
-    
-    def test_functor_map_left(self):
-        """Test FUNCTOR: mapping over Left returns Left"""
-        either = Left("error")
-        result = either.map(lambda x: x * 2)
+
+    def test_right_is_right(self):
+        e = Right(10)
+        assert e.is_right()
+        assert not e.is_left()
+        assert e.get_right() == 10
+
+    def test_left_is_left(self):
+        e = Left("error")
+        assert e.is_left()
+        assert not e.is_right()
+        assert e.get_left() == "error"
+
+    def test_right_map(self):
+        result = Right(5).map(lambda x: x * 2)
+        assert result.get_right() == 10
+
+    def test_left_map_is_noop(self):
+        result = Left("err").map(lambda x: x * 2)
         assert result.is_left()
-    
-    def test_monad_flat_map_right(self):
-        """Test MONAD: flat_map with Right"""
-        either = Right(5)
-        result = either.flat_map(lambda x: Right(x * 2))
-        assert result.is_right()
-        assert result.get_or_else(0) == 10
-    
-    def test_monad_flat_map_left(self):
-        """Test MONAD: flat_map with Left returns Left"""
-        either = Left("error")
-        result = either.flat_map(lambda x: Right(x * 2))
+        assert result.get_left() == "err"
+
+    def test_right_flat_map(self):
+        result = Right(5).flat_map(lambda x: Right(x + 1))
+        assert result.get_right() == 6
+
+    def test_right_flat_map_to_left(self):
+        result = Right(5).flat_map(lambda x: Left("oops"))
         assert result.is_left()
-    
-    def test_error_handling(self):
-        """Test Either for error handling"""
-        def divide(a: int, b: int) -> Either[str, float]:
-            if b == 0:
-                return Left("Division by zero")
-            return Right(a / b)
-        
-        success = divide(10, 2)
-        assert success.is_right()
-        assert success.get_or_else(0) == 5.0
-        
-        failure = divide(10, 0)
-        assert failure.is_left()
+
+    def test_left_flat_map_short_circuits(self):
+        called = []
+        result = Left("err").flat_map(lambda x: called.append(x) or Right(x))
+        assert result.is_left()
+        assert called == []
+
+    def test_get_or_else_on_right(self):
+        assert Right(42).get_or_else(0) == 42
+
+    def test_get_or_else_on_left(self):
+        assert Left("err").get_or_else(99) == 99
 
 
 # ============================================================================
-# Tests for IO Monad
+# 3. IO Monad
 # ============================================================================
 
 class TestIOMonad:
-    """Test IO monad implementation"""
-    
-    def test_io_creation(self):
-        """Test creating IO action"""
+
+    def test_io_runs_effect(self):
         io = IO(lambda: 42)
-        result = io.run()
-        assert result == 42
-    
-    def test_io_pure(self):
-        """Test io_pure helper"""
-        io = io_pure(42)
-        result = io.run()
-        assert result == 42
-    
-    def test_functor_map(self):
-        """Test FUNCTOR: mapping over IO"""
-        io = io_pure(5)
-        result = io.map(lambda x: x * 2).run()
-        assert result == 10
-    
-    def test_monad_flat_map(self):
-        """Test MONAD: flat_map with IO"""
-        io = io_pure(5)
-        result = io.flat_map(lambda x: io_pure(x * 2)).run()
-        assert result == 10
-    
-    def test_side_effect_delay(self):
-        """Test that IO delays side effects"""
-        counter = [0]
-        
-        def increment():
-            counter[0] += 1
-            return counter[0]
-        
-        io = IO(increment)
-        # Side effect hasn't happened yet
-        assert counter[0] == 0
-        
-        # Run triggers the side effect
-        result1 = io.run()
-        assert counter[0] == 1
-        assert result1 == 1
-        
-        # Running again triggers again
-        result2 = io.run()
-        assert counter[0] == 2
-        assert result2 == 2
+        assert io.run() == 42
+
+    def test_io_pure_wraps_value(self):
+        io = io_pure(7)
+        assert io.run() == 7
+
+    def test_io_map(self):
+        result = io_pure(3).map(lambda x: x * 4).run()
+        assert result == 12
+
+    def test_io_flat_map(self):
+        result = io_pure(5).flat_map(lambda x: io_pure(x + 10)).run()
+        assert result == 15
+
+    def test_io_delays_execution(self):
+        effects = []
+        io = IO(lambda: effects.append("run"))
+        assert effects == []
+        io.run()
+        assert effects == ["run"]
 
 
 # ============================================================================
-# Tests for Applicative
-# ============================================================================
-
-class TestApplicative:
-    """Test Applicative operations"""
-    
-    def test_lift2_maybe_success(self):
-        """Test APPLICATIVE: lift2 with two Some values"""
-        result = Applicative.lift2_maybe(
-            lambda a, b: a + b,
-            Some(5),
-            Some(3)
-        )
-        assert result.is_some()
-        assert result.get_or_else(0) == 8
-    
-    def test_lift2_maybe_failure(self):
-        """Test APPLICATIVE: lift2 with Nothing"""
-        result = Applicative.lift2_maybe(
-            lambda a, b: a + b,
-            Some(5),
-            Nothing()
-        )
-        assert not result.is_some()
-    
-    def test_sequence_maybe_success(self):
-        """Test APPLICATIVE: sequence with all Some"""
-        maybes = [Some(1), Some(2), Some(3)]
-        result = Applicative.sequence_maybe(maybes)
-        assert result.is_some()
-        assert result.get_or_else([]) == [1, 2, 3]
-    
-    def test_sequence_maybe_failure(self):
-        """Test APPLICATIVE: sequence with Nothing"""
-        maybes = [Some(1), Nothing(), Some(3)]
-        result = Applicative.sequence_maybe(maybes)
-        assert not result.is_some()
-
-
-# ============================================================================
-# Tests for Function Composition
+# 4. Function Composition
 # ============================================================================
 
 class TestFunctionComposition:
-    """Test function composition utilities"""
-    
-    def test_compose(self):
-        """Test compose function"""
-        add_one = lambda x: x + 1
-        multiply_two = lambda x: x * 2
-        
-        composed = compose(add_one, multiply_two)
-        result = composed(5)  # add_one(multiply_two(5)) = add_one(10) = 11
-        assert result == 11
-    
-    def test_pipe(self):
-        """Test pipe function"""
-        add_one = lambda x: x + 1
-        multiply_two = lambda x: x * 2
-        
-        piped = pipe(add_one, multiply_two)
-        result = piped(5)  # multiply_two(add_one(5)) = multiply_two(6) = 12
-        assert result == 12
-    
+
+    def test_compose_right_to_left(self):
+        f = compose(lambda x: x + 1, lambda x: x * 2)
+        assert f(3) == 7  # (3 * 2) + 1
+
+    def test_pipe_left_to_right(self):
+        f = pipe(lambda x: x * 2, lambda x: x + 1)
+        assert f(3) == 7  # (3 * 2) + 1
+
     def test_curry2(self):
-        """Test currying 2-arg function"""
-        add = lambda a, b: a + b
-        curried_add = curry2(add)
-        
-        add_five = curried_add(5)
-        result = add_five(3)
-        assert result == 8
+        add = curry2(lambda a, b: a + b)
+        add5 = add(5)
+        assert add5(3) == 8
+        assert add5(10) == 15
 
 
 # ============================================================================
-# Tests for Event Processing
+# 5. Event Parsing
 # ============================================================================
 
 class TestEventProcessing:
-    """Test event parsing and processing"""
-    
-    def create_sample_event(
-        self,
-        user: str = "TestUser",
-        title: str = "Test Page",
-        timestamp: int = 1234567890,
-        diff_size: int = 100
-    ) -> Dict[str, Any]:
-        """Helper to create sample event"""
-        return {
-            'user': user,
-            'title': title,
-            'timestamp': timestamp,
-            'length': {'old': 1000, 'new': 1000 + diff_size},
-            'bot': False,
-            'minor': False,
-            'wiki': 'enwiki',
-            'namespace': 0,
-            'comment': 'Test edit'
-        }
-    
+
     def test_parse_event_success(self):
-        """Test parsing valid event"""
-        raw_event = self.create_sample_event()
-        maybe_parsed = parse_event(raw_event)
-        
-        assert maybe_parsed.is_some()
-        parsed = maybe_parsed.get_or_else(None)
-        assert parsed.user == "TestUser"
-        assert parsed.title == "Test Page"
-        assert parsed.diff_size == 100
-    
-    def test_parse_event_missing_user(self):
-        """Test parsing event with missing user (should return Nothing)"""
-        raw_event = self.create_sample_event()
-        del raw_event['user']
-        
-        maybe_parsed = parse_event(raw_event)
-        assert not maybe_parsed.is_some()
-    
-    def test_parse_event_missing_title(self):
-        """Test parsing event with missing title"""
-        raw_event = self.create_sample_event()
-        del raw_event['title']
-        
-        maybe_parsed = parse_event(raw_event)
-        assert not maybe_parsed.is_some()
-    
-    def test_classify_edit_type_typo(self):
-        """Test classification of typo edits"""
-        edit_type = classify_edit_type(
-            diff_size=30,
-            is_bot=False,
-            is_minor=False,
-            comment="Fixed typo"
-        )
-        assert edit_type == EditType.TYPO_EDITING
-    
-    def test_classify_edit_type_content(self):
-        """Test classification of content additions"""
-        edit_type = classify_edit_type(
-            diff_size=200,
-            is_bot=False,
-            is_minor=False,
-            comment="Added new section"
-        )
-        assert edit_type == EditType.CONTENT_ADDITION
-    
-    def test_classify_edit_type_bot(self):
-        """Test classification of bot edits"""
-        edit_type = classify_edit_type(
-            diff_size=100,
-            is_bot=True,
-            is_minor=False,
-            comment="Bot edit"
-        )
-        assert edit_type == EditType.BOT_EDIT
-    
-    def test_extract_user_info(self):
-        """Test FUNCTOR: extracting user info from parsed event"""
-        raw_event = self.create_sample_event()
-        maybe_parsed = parse_event(raw_event)
-        
-        # Use map (functor) to extract user info
-        maybe_user_info = maybe_parsed.map(extract_user_info)
-        
-        assert maybe_user_info.is_some()
-        user_info = maybe_user_info.get_or_else({})
-        assert user_info['user'] == "TestUser"
-        assert 'timestamp' in user_info
-    
-    def test_parse_and_extract_user(self):
-        """Test composed function using FUNCTOR"""
-        raw_event = self.create_sample_event()
-        maybe_user_info = parse_and_extract_user(raw_event)
-        
-        assert maybe_user_info.is_some()
-        user_info = maybe_user_info.get_or_else({})
-        assert user_info['user'] == "TestUser"
-    
-    def test_parse_events_batch(self):
-        """Test batch parsing with FUNCTOR"""
-        events = [
-            self.create_sample_event(user="User1"),
-            self.create_sample_event(user="User2"),
-            {'invalid': 'event'},  # This should be filtered out
-            self.create_sample_event(user="User3")
-        ]
-        
-        parsed = parse_events_batch(events)
-        assert len(parsed) == 3
-        assert parsed[0].user == "User1"
-        assert parsed[1].user == "User2"
-        assert parsed[2].user == "User3"
+        raw = make_raw_event()
+        maybe = parse_event(raw)
+        assert maybe.is_some()
+        event = maybe.get_or_else(None)
+        assert event.user == "TestUser"
+        assert event.diff_size == 100  # 200 - 100
+
+    def test_parse_event_missing_user_returns_nothing(self):
+        raw = make_raw_event()
+        del raw['user']
+        assert not parse_event(raw).is_some()
+
+    def test_parse_event_missing_title_returns_nothing(self):
+        raw = make_raw_event()
+        del raw['title']
+        assert not parse_event(raw).is_some()
+
+    def test_parse_event_missing_timestamp_returns_nothing(self):
+        raw = make_raw_event()
+        del raw['timestamp']
+        assert not parse_event(raw).is_some()
+
+    def test_classify_typo_edit(self):
+        assert classify_edit_type(10, False, False, "") == EditType.TYPO_EDITING
+
+    def test_classify_content_addition(self):
+        assert classify_edit_type(200, False, False, "") == EditType.CONTENT_ADDITION
+
+    def test_classify_bot_edit(self):
+        assert classify_edit_type(10, True, False, "") == EditType.BOT_EDIT
+
+    def test_classify_minor_edit(self):
+        # diff >= 50 AND minor → MINOR_EDIT
+        assert classify_edit_type(60, False, True, "") == EditType.MINOR_EDIT
+
+    def test_parse_event_stores_comment(self):
+        raw = make_raw_event(comment="Fixed typo: 'teh' → 'the'")
+        event = parse_event(raw).get_or_else(None)
+        assert event.comment == "Fixed typo: 'teh' → 'the'"
+
+    def test_parse_stream_operator(self):
+        async def run():
+            source = aiostream.stream.iterate([
+                make_raw_event(user="U1"),
+                make_raw_event(user="U2"),
+            ])
+            results = []
+            async with (source | parse_stream.pipe()).stream() as s:
+                async for event in s:
+                    results.append(event)
+            return results
+
+        results = asyncio.run(run())
+        assert len(results) == 2
+        assert results[0].user == "U1"
+        assert results[1].user == "U2"
+
+    def test_parse_stream_filters_invalid(self):
+        """Events missing required fields should be silently dropped."""
+        async def run():
+            source = aiostream.stream.iterate([
+                make_raw_event(user="Good"),
+                {'bad': 'event'},  # no user/title/timestamp
+            ])
+            results = []
+            async with (source | parse_stream.pipe()).stream() as s:
+                async for event in s:
+                    results.append(event)
+            return results
+
+        results = asyncio.run(run())
+        assert len(results) == 1
+        assert results[0].user == "Good"
+
+
 
 
 # ============================================================================
-# Run Tests
+# 7. UserStatistics (immutability + aggregation)
 # ============================================================================
+
+class TestUserStatistics:
+
+    def test_empty_stats_defaults(self):
+        s = UserStatistics()
+        assert s.total_contributions == 0
+        assert s.typo_edits == 0
+        assert s.content_additions == 0
+        assert s.minor_edits == 0
+        assert s.bot_edits == 0
+        assert s.contribution_points == []
+        assert s.timestamps == []
+
+    def test_add_contribution_returns_new_instance(self):
+        """Core immutability guarantee."""
+        s1 = UserStatistics()
+        event = make_parsed_event()
+        s2 = s1.add_contribution(event)
+        assert s1 is not s2
+        assert s1.total_contributions == 0
+        assert s2.total_contributions == 1
+
+    def test_add_contribution_increments_total(self):
+        s = UserStatistics()
+        for i in range(5):
+            s = s.add_contribution(make_parsed_event())
+        assert s.total_contributions == 5
+
+    def test_add_contribution_counts_typo_edit(self):
+        s = UserStatistics()
+        s = s.add_contribution(make_parsed_event(edit_type=EditType.TYPO_EDITING))
+        assert s.typo_edits == 1
+        assert s.content_additions == 0
+
+    def test_add_contribution_counts_content_addition(self):
+        s = UserStatistics()
+        s = s.add_contribution(make_parsed_event(edit_type=EditType.CONTENT_ADDITION))
+        assert s.content_additions == 1
+        assert s.typo_edits == 0
+
+    def test_add_contribution_counts_minor_edit(self):
+        s = UserStatistics()
+        s = s.add_contribution(make_parsed_event(is_minor=True))
+        assert s.minor_edits == 1
+
+    def test_add_contribution_counts_bot_edit(self):
+        s = UserStatistics()
+        s = s.add_contribution(make_parsed_event(is_bot=True))
+        assert s.bot_edits == 1
+
+    def test_add_contribution_tracks_topic(self):
+        s = UserStatistics()
+        s = s.add_contribution(make_parsed_event(title="Python"))
+        s = s.add_contribution(make_parsed_event(title="Python"))
+        s = s.add_contribution(make_parsed_event(title="Java"))
+        assert s.topic_contributions["Python"] == 2
+        assert s.topic_contributions["Java"] == 1
+
+    def test_get_top_topics_sorted(self):
+        s = UserStatistics()
+        for _ in range(3):
+            s = s.add_contribution(make_parsed_event(title="Python"))
+        for _ in range(1):
+            s = s.add_contribution(make_parsed_event(title="Java"))
+        topics = s.get_top_topics(limit=5)
+        assert topics[0] == ("Python", 3)
+        assert topics[1] == ("Java", 1)
+
+    def test_get_top_topics_respects_limit(self):
+        s = UserStatistics()
+        for title in ["A", "B", "C", "D", "E"]:
+            s = s.add_contribution(make_parsed_event(title=title))
+        topics = s.get_top_topics(limit=2)
+        assert len(topics) == 2
+
+    def test_get_contribution_series_empty(self):
+        s = UserStatistics()
+        assert s.get_contribution_series(TimeGranularity.HOUR) == []
+
+    def test_get_contribution_series_single_event(self):
+        s = UserStatistics()
+        ts = datetime(2024, 3, 23, 10, 5, 0)
+        s = s.add_contribution(make_parsed_event(timestamp=ts))
+        series = s.get_contribution_series(TimeGranularity.HOUR)
+        assert len(series) == 1
+        assert series[0][0] == datetime(2024, 3, 23, 10, 0, 0)
+        assert series[0][1] == 1
+
+    def test_get_contribution_series_aggregates_same_hour_bucket(self):
+        """
+        BUG FIX: Multiple events in the same time bucket must produce
+        the MAX cumulative total, not an arbitrary overwrite.
+        """
+        s = UserStatistics()
+        s = s.add_contribution(make_parsed_event(timestamp=datetime(2024, 3, 23, 10, 5, 0)))   # total=1
+        s = s.add_contribution(make_parsed_event(timestamp=datetime(2024, 3, 23, 10, 35, 0)))  # total=2
+        s = s.add_contribution(make_parsed_event(timestamp=datetime(2024, 3, 23, 11, 5, 0)))   # total=3
+
+        series = s.get_contribution_series(TimeGranularity.HOUR)
+
+        assert len(series) == 2
+        bucket_10 = datetime(2024, 3, 23, 10, 0, 0)
+        bucket_11 = datetime(2024, 3, 23, 11, 0, 0)
+        series_dict = dict(series)
+        assert series_dict[bucket_10] == 2  # highest total in the 10:xx bucket
+        assert series_dict[bucket_11] == 3  # highest total in the 11:xx bucket
+
+    def test_get_contribution_series_day_granularity(self):
+        s = UserStatistics()
+        s = s.add_contribution(make_parsed_event(timestamp=datetime(2024, 3, 23, 8, 0, 0)))
+        s = s.add_contribution(make_parsed_event(timestamp=datetime(2024, 3, 23, 20, 0, 0)))
+        s = s.add_contribution(make_parsed_event(timestamp=datetime(2024, 3, 24, 10, 0, 0)))
+
+        series = s.get_contribution_series(TimeGranularity.DAY)
+        assert len(series) == 2  # 2 distinct days
+
+    def test_get_contribution_series_is_sorted(self):
+        s = UserStatistics()
+        s = s.add_contribution(make_parsed_event(timestamp=datetime(2024, 3, 25, 12, 0, 0)))
+        s = s.add_contribution(make_parsed_event(timestamp=datetime(2024, 3, 23, 12, 0, 0)))
+        s = s.add_contribution(make_parsed_event(timestamp=datetime(2024, 3, 24, 12, 0, 0)))
+
+        series = s.get_contribution_series(TimeGranularity.DAY)
+        timestamps = [t for t, _ in series]
+        assert timestamps == sorted(timestamps)
+
+
+# ============================================================================
+# 8. StatisticsStore (immutability + accumulation)
+# ============================================================================
+
+class TestStatisticsStore:
+
+    def test_empty_store_defaults(self):
+        store = StatisticsStore()
+        assert store.users == {}
+        assert len(store.all_events) == 0
+        assert len(store.topic_typo_counts) == 0
+        assert len(store.word_mistake_counts) == 0
+
+    def test_update_returns_new_instance(self):
+        store = StatisticsStore()
+        event = make_parsed_event()
+        new_store = store.update(event)
+        assert store is not new_store
+
+    def test_update_does_not_mutate_original(self):
+        store = StatisticsStore()
+        event = make_parsed_event()
+        _ = store.update(event)
+        assert len(store.users) == 0
+        assert len(store.all_events) == 0
+
+    def test_update_creates_user_on_first_event(self):
+        store = StatisticsStore()
+        event = make_parsed_event(user="Alice")
+        store = store.update(event)
+        assert "Alice" in store.users
+        assert store.users["Alice"].total_contributions == 1
+
+    def test_update_accumulates_existing_user(self):
+        store = StatisticsStore()
+        for _ in range(3):
+            store = store.update(make_parsed_event(user="Bob"))
+        assert store.users["Bob"].total_contributions == 3
+
+    def test_update_tracks_typo_topic(self):
+        store = StatisticsStore()
+        store = store.update(
+            make_parsed_event(title="Python", edit_type=EditType.TYPO_EDITING)
+        )
+        assert store.topic_typo_counts["Python"] == 1
+
+    def test_update_does_not_track_non_typo_topic(self):
+        store = StatisticsStore()
+        store = store.update(
+            make_parsed_event(title="Python", edit_type=EditType.CONTENT_ADDITION)
+        )
+        assert store.topic_typo_counts["Python"] == 0
+
+    def test_update_appends_event_to_all_events(self):
+        store = StatisticsStore()
+        for i in range(4):
+            store = store.update(make_parsed_event())
+        assert len(store.all_events) == 4
+
+    def test_get_summary_contains_expected_keys(self):
+        store = StatisticsStore()
+        summary = store.get_summary()
+        assert "total_users" in summary
+        assert "total_events" in summary
+        assert "total_topics" in summary
+
+    def test_get_summary_values(self):
+        store = StatisticsStore()
+        store = store.update(make_parsed_event(user="Alice", title="P1", edit_type=EditType.TYPO_EDITING))
+        store = store.update(make_parsed_event(user="Bob",   title="P2", edit_type=EditType.CONTENT_ADDITION))
+        s = store.get_summary()
+        assert s["total_users"] == 2
+        assert s["total_events"] == 2
+        assert s["total_topics"] == 1  # only P1 was a typo
+
+
+# ============================================================================
+# 9. Query API — all functions, Left and Right paths
+# ============================================================================
+
+class TestQueryAPI:
+
+    # --- get_user_contribution_series ---
+
+    def test_series_user_not_found_returns_left(self):
+        result = get_user_contribution_series("Ghost", StatisticsStore())
+        assert result.is_left()
+
+    def test_series_no_data_returns_left(self):
+        """Store has user but somehow no contribution_points (edge case)."""
+        store = StatisticsStore(users={"Alice": UserStatistics()})
+        result = get_user_contribution_series("Alice", store)
+        assert result.is_left()
+
+    def test_series_returns_right_with_data(self):
+        store = StatisticsStore()
+        event = make_parsed_event(user="Alice", timestamp=datetime(2024, 3, 23, 10, 0, 0))
+        store = store.update(event)
+        result = get_user_contribution_series("Alice", store, TimeGranularity.HOUR)
+        assert result.is_right()
+        data = result.get_right()
+        assert len(data) == 1
+        assert data[0][1] == 1  # one contribution
+
+    def test_series_respects_granularity(self):
+        store = StatisticsStore()
+        for h in [8, 10, 12]:
+            store = store.update(
+                make_parsed_event(user="Alice", timestamp=datetime(2024, 3, 23, h, 0, 0))
+            )
+        result_hour = get_user_contribution_series("Alice", store, TimeGranularity.HOUR)
+        result_day = get_user_contribution_series("Alice", store, TimeGranularity.DAY)
+        assert len(result_hour.get_right()) == 3  # 3 different hours
+        assert len(result_day.get_right()) == 1   # all in same day
+
+    # --- get_user_top_topics ---
+
+    def test_topics_user_not_found(self):
+        result = get_user_top_topics("Ghost", StatisticsStore())
+        assert result.is_left()
+
+    def test_topics_no_topics_returns_left(self):
+        store = StatisticsStore(users={"Alice": UserStatistics()})
+        result = get_user_top_topics("Alice", store)
+        assert result.is_left()
+
+    def test_topics_returns_sorted_by_count(self):
+        store = StatisticsStore()
+        for _ in range(3):
+            store = store.update(make_parsed_event(user="Alice", title="Python"))
+        store = store.update(make_parsed_event(user="Alice", title="Java"))
+        result = get_user_top_topics("Alice", store, limit=5)
+        assert result.is_right()
+        topics = result.get_right()
+        assert topics[0] == ("Python", 3)
+        assert topics[1] == ("Java", 1)
+
+    def test_topics_limit_is_respected(self):
+        store = StatisticsStore()
+        for title in ["A", "B", "C", "D", "E"]:
+            store = store.update(make_parsed_event(user="Alice", title=title))
+        result = get_user_top_topics("Alice", store, limit=2)
+        assert len(result.get_right()) == 2
+
+    # --- get_user_contribution_types ---
+
+    def test_types_user_not_found(self):
+        result = get_user_contribution_types("Ghost", StatisticsStore())
+        assert result.is_left()
+
+    def test_types_returns_absolute_numbers(self):
+        store = StatisticsStore()
+        store = store.update(make_parsed_event(user="Alice", edit_type=EditType.TYPO_EDITING))
+        store = store.update(make_parsed_event(user="Alice", edit_type=EditType.CONTENT_ADDITION))
+        store = store.update(make_parsed_event(user="Alice", edit_type=EditType.CONTENT_ADDITION))
+
+        result = get_user_contribution_types("Alice", store)
+        assert result.is_right()
+        types = result.get_right()
+        assert types["typo_edits"] == 1
+        assert types["content_additions"] == 2
+        assert types["total"] == 3
+
+    def test_types_contains_all_keys(self):
+        store = StatisticsStore()
+        store = store.update(make_parsed_event(user="Alice"))
+        types = get_user_contribution_types("Alice", store).get_right()
+        for key in ("typo_edits", "content_additions", "minor_edits", "bot_edits", "total"):
+            assert key in types
+
+    # --- get_most_active_users ---
+
+    def test_active_users_empty_store_returns_left(self):
+        result = get_most_active_users(StatisticsStore(), TimePeriod.DAY)
+        assert result.is_left()
+
+    def test_active_users_returns_sorted_by_count(self):
+        store = StatisticsStore()
+        recent = datetime.now() - timedelta(hours=1)
+        for _ in range(3):
+            store = store.update(make_parsed_event(user="Alice", timestamp=recent))
+        store = store.update(make_parsed_event(user="Bob", timestamp=recent))
+
+        result = get_most_active_users(store, TimePeriod.YEAR)
+        assert result.is_right()
+        users = result.get_right()
+        assert users[0][0] == "Alice"
+        assert users[0][1] == 3
+
+    def test_active_users_period_filter_excludes_old_events(self):
+        """Events older than the period must not be counted."""
+        store = StatisticsStore()
+
+        old_ts = datetime.now() - timedelta(days=400)
+        recent_ts = datetime.now() - timedelta(hours=1)
+
+        old_event = make_parsed_event(user="OldUser", timestamp=old_ts)
+        recent_event = make_parsed_event(user="RecentUser", timestamp=recent_ts)
+
+        store = store.update(old_event).update(recent_event)
+
+        result = get_most_active_users(store, TimePeriod.YEAR)  # last 365 days
+        assert result.is_right()
+        users_dict = dict(result.get_right())
+        assert "RecentUser" in users_dict
+        assert "OldUser" not in users_dict
+
+    def test_active_users_limit_respected(self):
+        store = StatisticsStore()
+        recent = datetime.now() - timedelta(hours=1)
+        for user in ["A", "B", "C", "D", "E"]:
+            store = store.update(make_parsed_event(user=user, timestamp=recent))
+        result = get_most_active_users(store, TimePeriod.YEAR, limit=3)
+        assert len(result.get_right()) == 3
+
+    # --- get_top_typo_topics ---
+
+    def test_typo_topics_empty_returns_left(self):
+        result = get_top_typo_topics(StatisticsStore())
+        assert result.is_left()
+
+    def test_typo_topics_returns_right(self):
+        store = StatisticsStore()
+        store = store.update(make_parsed_event(title="Python", edit_type=EditType.TYPO_EDITING))
+        store = store.update(make_parsed_event(title="Python", edit_type=EditType.TYPO_EDITING))
+        store = store.update(make_parsed_event(title="Java",   edit_type=EditType.TYPO_EDITING))
+        result = get_top_typo_topics(store, limit=10)
+        assert result.is_right()
+        topics = dict(result.get_right())
+        assert topics["Python"] == 2
+        assert topics["Java"] == 1
+
+    def test_typo_topics_non_typo_not_counted(self):
+        store = StatisticsStore()
+        store = store.update(make_parsed_event(title="Python", edit_type=EditType.CONTENT_ADDITION))
+        result = get_top_typo_topics(store)
+        assert result.is_left()  # no typos → Left
+
+    def test_typo_topics_limit(self):
+        store = StatisticsStore()
+        for title in ["A", "B", "C", "D", "E", "F"]:
+            store = store.update(make_parsed_event(title=title, edit_type=EditType.TYPO_EDITING))
+        result = get_top_typo_topics(store, limit=3)
+        assert len(result.get_right()) == 3
+
+    # --- get_statistics_summary ---
+
+    def test_summary_always_returns_right(self):
+        result = get_statistics_summary(StatisticsStore())
+        assert result.is_right()
+
+    def test_summary_reflects_current_store(self):
+        store = StatisticsStore()
+        store = store.update(make_parsed_event(user="Alice"))
+        store = store.update(make_parsed_event(user="Bob"))
+        summary = get_statistics_summary(store).get_right()
+        assert summary["total_users"] == 2
+        assert summary["total_events"] == 2
+
+
+
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wikipedia Real-Time Dashboard</title>
+    <!-- Use Chart.js for visualizations -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1>🌐 Wikipedia Stream Analyzer</h1>
+            <div id="connection-status" class="status-offline">Connecting...</div>
+        </div>
+    </header>
+
+    <main class="container">
+        <!-- Dashboard Summary Row -->
+        <section class="summary-grid">
+            <div class="card summary-card">
+                <h3>Total Events</h3>
+                <p id="stat-events">0</p>
+            </div>
+            <div class="card summary-card">
+                <h3>Unique Users</h3>
+                <p id="stat-users">0</p>
+            </div>
+            <div class="card summary-card">
+                <h3>Tracked Topics</h3>
+                <p id="stat-topics">0</p>
+            </div>
+        </section>
+
+        <div class="content-grid">
+            <!-- Left Column: Live Feed -->
+            <section class="card feed-section">
+                <div class="card-header">
+                    <h2>📡 Live Change Feed</h2>
+                    <span id="feed-count">0 events</span>
+                </div>
+                <div id="live-feed" class="scroll-container">
+                    <p class="placeholder">Waiting for events...</p>
+                </div>
+            </section>
+
+            <!-- Right Column: Top Stats -->
+            <div class="stats-column">
+                <section class="card">
+                    <h2>🏆 Top Contributors (1h)</h2>
+                    <div class="chart-container">
+                        <canvas id="topUsersChart"></canvas>
+                    </div>
+                </section>
+
+                <section class="card">
+                    <h2>⌨️ Typo Correction Hotspots</h2>
+                    <div id="typo-topics-list" class="list-container">
+                        <p class="placeholder">No data yet.</p>
+                    </div>
+                </section>
+            </div>
+        </div>
+
+        <!-- Most Mistaken Words Section -->
+        <section class="card">
+            <h2>✏️ Most Mistaken Words</h2>
+            <p class="chart-subtitle">Top spelling corrections detected across Wikipedia edits</p>
+            <div class="chart-container chart-container--wide">
+                <canvas id="mistakenWordsChart"></canvas>
+            </div>
+            <div id="mistaken-words-placeholder" class="placeholder">Collecting correction data...</div>
+        </section>
+
+        <!-- User Explorer Section -->
+        <section class="card user-explorer">
+            <div class="card-header">
+                <h2>🔍 User Explorer</h2>
+                <div class="search-box">
+                    <input type="text" id="user-search-input" placeholder="Enter username (e.g. ClueBot NG)">
+                    <button id="user-search-btn">Analyze</button>
+                </div>
+            </div>
+            <div id="user-details" class="hidden">
+                <div class="user-info-grid">
+                    <div class="user-stats-text">
+                        <h3 id="detail-username">Username</h3>
+                        <ul class="stats-list">
+                            <li>Total Contributions: <span id="detail-total">0</span></li>
+                            <li>Typo Edits: <span id="detail-typos">0</span></li>
+                            <li>Content Additions: <span id="detail-content">0</span></li>
+                        </ul>
+                        <h4>Top Topics:</h4>
+                        <ul id="detail-topics" class="tags"></ul>
+                    </div>
+                    <div class="user-chart">
+                        <canvas id="userGrowthChart"></canvas>
+                    </div>
+                </div>
+            </div>
+            <div id="user-not-found" class="hidden">
+                <p class="error-text">User not found or has no contributions yet.</p>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <div class="container">
+            <p>Functional Programming Course Project • Wikipedia EventStream API</p>
+        </div>
+    </footer>
+
+    <script src="/static/script.js"></script>
+</body>
+</html>
