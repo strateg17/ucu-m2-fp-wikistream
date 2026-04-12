@@ -3,7 +3,7 @@
 This document provides foundational mandates and guidelines for Gemini CLI when working on the Wikipedia Real-Time Stream Analyzer project. These instructions take precedence over general defaults.
 
 ## 📖 Project Overview
-This is a Functional Reactive Programming (FRP) implementation for analyzing Wikipedia/Wikimedia real-time change streams. It follows a specific "Professor's Pattern" using the `aiostream` library and custom Monad implementations for type safety and side-effect isolation.
+This is a Functional Reactive Programming (FRP) implementation for analyzing Wikipedia/Wikimedia real-time change streams using the `aiostream` library and custom Monad implementations for type safety and side-effect isolation.
 
 ## 🏗 Architectural Mandates
 
@@ -49,13 +49,16 @@ Located in `functional_utils.py`, these monads MUST be used for consistency:
    - Study `functional_utils.py` before extending Monad capabilities.
 
 2. **Execution**:
-   - For UI/Visualization changes, verify the output in the `visualizations/` directory.
-   - For streaming changes, use `aiostream.pipe.take(N)` to limit event counts during testing.
+   - For UI/Dashboard changes, run `dashboard.py` and verify via the web interface.
+   - For CLI or core logic changes, use `main.py` to observe real-time pipeline behavior.
+   - Use `aiostream.pipe.take(N)` during development to limit event counts for quick tests.
 
 3. **Validation**:
    - Run `pytest test_functional.py -v` to ensure no regressions in Monad behavior or event processing.
-   - Run `python main.py` to verify the pure functional `aiostream` pipeline integrity.
+   - Run `python main.py` to verify the infinite CLI reactive pipeline integrity.
+   - Run `python dashboard.py` to verify the web-based dashboard and typo analysis.
 
 ## 🚨 Safety & Security
 - **Data Privacy**: Although the Wikipedia EventStream is public, avoid logging or storing personal identifying information (PII) beyond what is necessary for statistics.
 - **Resource Management**: Always use `async with pipeline.stream() as streamer` to ensure proper resource cleanup of SSE connections.
+
