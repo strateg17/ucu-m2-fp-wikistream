@@ -30,7 +30,7 @@ def signal_handler(sig, frame):
 signal.signal(signal.SIGINT, signal_handler)
 
 
-async def demo_reactive_pipeline(max_events: int = 30):
+async def demo_reactive_pipeline(max_events: int = 5000):
     """Pure functional pipeline with immutable state accumulation."""
     print("\n" + "=" * 80)
     print("DEMO: Pure Functional Reactive Pipeline")
